@@ -30,6 +30,7 @@ file(GLOB_RECURSE SOURCES
 add_executable(${PROJECT_NAME} ${SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
     ${ASIO_INCLUDE_DIR}
 )
 
@@ -51,6 +52,7 @@ if(BUILD_TESTS)
         add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})
 
         target_include_directories(${PROJECT_NAME}_tests PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
             ${ASIO_INCLUDE_DIR}
         )
 
