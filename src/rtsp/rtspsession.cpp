@@ -4,14 +4,16 @@
 #include "rtp/rtptransport.h"
 #include "rtp/rtpsender.h"
 #include "rtp/media.h"
+#include "rtp/h264source.h"
+#include "rtp/nalsource.h"
+#include "rtp/rawh264source.h"
 #include <sstream>
 #include <chrono>
 #include <random>
-#include <spdlog/spdlog.h>
 
 namespace rtsp {
 
-    RtspSession::RtspSession(boost::asio::ip::tcp::socket socket)
+    RtspSession::RtspSession(asio::ip::tcp::socket socket)
         : AsioTCPSession(std::move(socket)) {
         LOG_RTSP_INFO_AT("RtspSession created, session_id: {}", GetSessionID());
     }
@@ -20,24 +22,93 @@ namespace rtsp {
         media_sources_ = sources;
     }
 
-    void RtspSession::OnBytes(const uint8_t* data, size_t size) {
-        // RTP/RTCP 数据包：$ + channel + length
-        if (size >= 4 && data[0] == '$') {
-            uint8_t channel = data[1];
-            uint16_t length = (data[2] << 8) | data[3];
+    void RtspSession::LoadVideoFile(const std::string& filepath) {
+        video_filepath_ = filepath;
 
-            if (channel == context_.rtcp_channel) {
-                // RTCP 数据 - 可以选择忽略或记录
-                HandleRtcpData(data + 4, length);
-            }
-            else if (channel == context_.rtp_channel) {
-                // RTP 数据（如果有双向传输需求）
-                HandleRtpData(data + 4, length);
-            }
+        nal_source_ = std::make_shared<rtp::RawH264NALSource>();
+        if (!nal_source_->Open(filepath)) {
+            LOG_RTSP_ERROR_AT("Failed to open video file: {}", filepath);
+            nal_source_.reset();
+            return;
         }
-        else {
-            // RTSP 文本信令
-            HandleRtspRequest(std::string(reinterpret_cast<const char*>(data), size));
+
+        h264_source_ = std::make_shared<rtp::H264Source>(nal_source_->GetFrameRate());
+        h264_source_->SetSendFrameCallback(
+            [this](rtp::MediaChannelId ch, rtp::RtpPacket pkt) -> bool {
+                return packet_queue_.Push(ch, std::move(pkt));
+            });
+
+        real_sps_.clear();
+        real_pps_.clear();
+
+        auto raw_source = std::static_pointer_cast<rtp::RawH264NALSource>(nal_source_);
+        (void)raw_source;
+
+        auto frame = nal_source_->ReadNextFrame();
+        if (frame) {
+            for (auto& nal : *frame) {
+                if (nal.type == 7) {
+                    real_sps_.resize(nal.size);
+                    std::memcpy(real_sps_.data(), nal.data.get(), nal.size);
+                } else if (nal.type == 8) {
+                    real_pps_.resize(nal.size);
+                    std::memcpy(real_pps_.data(), nal.data.get(), nal.size);
+                }
+            }
+            nal_source_->Reset();
+        }
+
+        media_sources_.clear();
+        media_sources_.push_back(h264_source_);
+
+        LOG_RTSP_INFO_AT("Video file loaded: {} ({}fps, {}x{})",
+            filepath,
+            nal_source_->GetFrameRate(),
+            nal_source_->GetWidth(),
+            nal_source_->GetHeight());
+    }
+
+    void RtspSession::OnBytes(const uint8_t* data, size_t size) {
+        read_buffer_.insert(read_buffer_.end(), data, data + size);
+
+        if (context_.state == RtspState::PLAYING || context_.state == RtspState::READY) {
+            ProcessInterleavedData();
+        } else {
+            HandleRtspRequest(std::string(
+                reinterpret_cast<const char*>(read_buffer_.data()), read_buffer_.size()));
+            read_buffer_.clear();
+        }
+    }
+
+    void RtspSession::ProcessInterleavedData() {
+        while (read_buffer_.size() >= 4) {
+            if (read_buffer_[0] == '$') {
+                uint8_t channel = read_buffer_[1];
+                uint16_t length = (static_cast<uint16_t>(read_buffer_[2]) << 8) | read_buffer_[3];
+                size_t frame_size = 4 + length;
+
+                if (read_buffer_.size() < frame_size) {
+                    break;
+                }
+
+                if (channel == context_.rtcp_channel) {
+                    HandleRtcpData(read_buffer_.data() + 4, length);
+                } else if (channel == context_.rtp_channel) {
+                    HandleRtpData(read_buffer_.data() + 4, length);
+                }
+
+                read_buffer_.erase(read_buffer_.begin(),
+                    read_buffer_.begin() + static_cast<ptrdiff_t>(frame_size));
+            } else {
+                if (read_buffer_[0] == 'O' || read_buffer_[0] == 'D' ||
+                    read_buffer_[0] == 'S' || read_buffer_[0] == 'P' ||
+                    read_buffer_[0] == 'T') {
+                    HandleRtspRequest(std::string(
+                        reinterpret_cast<const char*>(read_buffer_.data()), read_buffer_.size()));
+                }
+                read_buffer_.clear();
+                break;
+            }
         }
     }
 
@@ -46,15 +117,11 @@ namespace rtsp {
     }
 
     void RtspSession::HandleRtcpData(const uint8_t* data, size_t size) {
-        // 处理 RTCP 数据
-        // 可以选择记录日志或解析 RTCP 包
-        LOG_RTSP_INFO_AT("Received RTCP data, size: {}", size);
+        LOG_RTSP_INFO_AT("Received RTCP data over interleaved, size: {}", size);
     }
 
     void RtspSession::HandleRtpData(const uint8_t* data, size_t size) {
-        // 处理 RTP 数据
-        // 可以选择记录日志或解析 RTP 包
-        LOG_RTSP_INFO_AT("Received RTP data, size: {}", size);
+        LOG_RTSP_INFO_AT("Received RTP data over interleaved, size: {}", size);
     }
 
     void RtspSession::HandleRtspRequest(const std::string& request) {
@@ -110,8 +177,33 @@ namespace rtsp {
         case RtspMethod::PAUSE:
             response = HandlePause(headers);
             break;
-        default:
+        case RtspMethod::GET_PARAMETER:
+        {
+            RtspResponse resp;
+            resp.status_code = static_cast<int>(RtspStatus::OK);
+            resp.status_reason = "OK";
+            resp.headers["Session"] = context_.session_id;
+            resp.headers["Content-Length"] = "0";
+            response = BuildResponse(resp, context_.cseq);
             break;
+        }
+        case RtspMethod::SET_PARAMETER:
+        {
+            RtspResponse resp;
+            resp.status_code = static_cast<int>(RtspStatus::OK);
+            resp.status_reason = "OK";
+            resp.headers["Session"] = context_.session_id;
+            response = BuildResponse(resp, context_.cseq);
+            break;
+        }
+        default:
+        {
+            RtspResponse resp;
+            resp.status_code = static_cast<int>(RtspStatus::MethodNotAllowed);
+            resp.status_reason = "Method Not Allowed";
+            response = BuildResponse(resp, context_.cseq);
+            break;
+        }
         }
 
         if (!response.empty()) {
@@ -127,7 +219,7 @@ namespace rtsp {
         RtspResponse resp;
         resp.status_code = static_cast<int>(RtspStatus::OK);
         resp.status_reason = "OK";
-        resp.headers["Public"] = "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, PAUSE";
+        resp.headers["Public"] = "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, PAUSE, GET_PARAMETER, SET_PARAMETER";
         return BuildResponse(resp, context_.cseq);
     }
 
@@ -158,31 +250,15 @@ namespace rtsp {
         std::string transport_header = transport_it->second;
         LOG_RTSP_INFO_AT("Transport header: {}", transport_header);
 
-        // 解析client_port
-        auto client_port_it = transport_header.find("client_port=");
-        if (client_port_it == std::string::npos) {
-            LOG_RTSP_ERROR_AT("client_port header not found in SETUP request");
-            RtspResponse resp;
-            resp.status_code = static_cast<int>(RtspStatus::BadRequest);
-            resp.status_reason = "Bad Request";
-            return BuildResponse(resp, context_.cseq);
-        }
-        auto client_port_pair = parseRangeNum(transport_header.substr(client_port_it + 12));
-        if (client_port_pair.first.empty() || client_port_pair.second.empty()) {
-            LOG_RTSP_ERROR_AT("Invalid client-Port range: {}", transport_header.substr(client_port_it + 12));
-            RtspResponse resp;
-            resp.status_code = static_cast<int>(RtspStatus::BadRequest);
-            resp.status_reason = "Bad Request";
-            return BuildResponse(resp, context_.cseq);
-        }
-        context_.client_rtp_port = std::stoi(client_port_pair.first);
-        context_.client_rtcp_port = std::stoi(client_port_pair.second);
-
         if (context_.session_id.empty()) {
             context_.session_id = GetSessionID();
         }
 
-        if (transport_header.find("RTP/AVP/TCP") != std::string::npos) {
+        bool is_tcp = transport_header.find("RTP/AVP/TCP") != std::string::npos;
+        bool is_udp = !is_tcp && transport_header.find("RTP/AVP") != std::string::npos;
+        bool is_multi = transport_header.find("multicast") != std::string::npos;
+
+        if (is_tcp) {
             context_.mode = rtp::TransportMode::RTP_OVER_TCP;
             std::size_t pos = transport_header.find("interleaved=");
             if (pos != std::string::npos) {
@@ -190,8 +266,7 @@ namespace rtsp {
                 std::size_t pos2 = interleaved_str.find("-");
                 if (pos2 != std::string::npos) {
                     context_.rtp_channel = std::stoi(interleaved_str.substr(0, pos2));
-                }
-                else {
+                } else {
                     LOG_RTSP_ERROR_AT("Invalid interleaved parameter: {}", interleaved_str);
                     context_.rtp_channel = 0;
                     context_.rtcp_channel = 1;
@@ -199,21 +274,33 @@ namespace rtsp {
                 std::size_t end = interleaved_str.find(";");
                 if (end == std::string::npos) {
                     context_.rtcp_channel = std::stoi(interleaved_str.substr(pos2 + 1));
-                }
-                else {
+                } else {
                     context_.rtcp_channel = std::stoi(interleaved_str.substr(pos2 + 1, end - pos2 - 1));
                 }
             }
-        }
-        else if (transport_header.find("RTP/AVP") != std::string::npos &&
-            transport_header.find("unicast") != std::string::npos) {
+        } else if (is_udp) {
             context_.mode = rtp::TransportMode::RTP_OVER_UDP;
-        }
-        else if (transport_header.find("multicast") != std::string::npos) {
+            auto client_port_it = transport_header.find("client_port=");
+            if (client_port_it == std::string::npos) {
+                LOG_RTSP_ERROR_AT("client_port header not found in UDP SETUP request");
+                RtspResponse resp;
+                resp.status_code = static_cast<int>(RtspStatus::BadRequest);
+                resp.status_reason = "Bad Request";
+                return BuildResponse(resp, context_.cseq);
+            }
+            auto client_port_pair = parseRangeNum(transport_header.substr(client_port_it + 12));
+            if (client_port_pair.first.empty() || client_port_pair.second.empty()) {
+                LOG_RTSP_ERROR_AT("Invalid client-Port range: {}", transport_header.substr(client_port_it + 12));
+                RtspResponse resp;
+                resp.status_code = static_cast<int>(RtspStatus::BadRequest);
+                resp.status_reason = "Bad Request";
+                return BuildResponse(resp, context_.cseq);
+            }
+            context_.client_rtp_port = std::stoi(client_port_pair.first);
+            context_.client_rtcp_port = std::stoi(client_port_pair.second);
+        } else if (is_multi) {
             context_.mode = rtp::TransportMode::RTP_OVER_MULTICAST;
-            // TODO
-        }
-        else {
+        } else {
             LOG_RTSP_ERROR_AT("Invalid Transport header: {}", transport_header);
             RtspResponse resp;
             resp.status_code = static_cast<int>(RtspStatus::BadRequest);
@@ -223,7 +310,6 @@ namespace rtsp {
 
         auto peer_endpoint = socket_.remote_endpoint();
         std::string peer_ip = peer_endpoint.address().to_string();
-        uint16_t peer_port = peer_endpoint.port();
 
         context_.state = RtspState::READY;
 
@@ -236,7 +322,6 @@ namespace rtsp {
             auto sender = std::make_shared<rtp::AsioTcpRtpSender>(socket_);
             rtp_transport_ = std::make_shared<rtp::AsioRtpTransport>(GetIOContext());
             rtp_transport_->SetSender(sender);
-            // 按照客户端的interleaved参数设置通道
             rtp_transport_->SetRtpOverTcp(rtp::MediaChannelId::channel_0,
                 static_cast<uint16_t>(context_.rtp_channel),
                 static_cast<uint16_t>(context_.rtcp_channel));
@@ -306,12 +391,28 @@ namespace rtsp {
         resp.headers["RTP-Info"] = rtp_info;
 
         if (rtp_transport_) {
+            if (!h264_source_) {
+                h264_source_ = std::make_shared<rtp::H264Source>(25);
+                h264_source_->SetSendFrameCallback(
+                    [this](rtp::MediaChannelId ch, rtp::RtpPacket pkt) -> bool {
+                        return packet_queue_.Push(ch, std::move(pkt));
+                    });
+            }
+
+            if (nal_source_ && nal_source_->HasMoreData()) {
+                nal_source_->Reset();
+            }
+
+            uint32_t fps = 25;
+            if (nal_source_) fps = nal_source_->GetFrameRate();
+            frame_index_ = 0;
+
             rtp_transport_->SetFrameProvider(rtp::MediaChannelId::channel_0,
                 [this]() -> std::shared_ptr<rtp::RtpPacket> {
-                    return GenerateTestFrame();
+                    return ProduceNextPacket();
                 });
-            rtp_transport_->SetFrameRate(rtp::MediaChannelId::channel_0, 25);
-            
+            rtp_transport_->SetFrameRate(rtp::MediaChannelId::channel_0, fps);
+
             SendSpsPps();
             rtp_transport_->SetPlaying(rtp::MediaChannelId::channel_0, true);
         }
@@ -320,25 +421,28 @@ namespace rtsp {
     }
 
     void RtspSession::SendSpsPps() {
-        constexpr uint8_t SPS[] = { 0x67, 0x42, 0x00, 0x1f, 0x96, 0x56, 0x50, 0x05, 0xBA, 0x11, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x95, 0x08, 0x84 };
-        constexpr uint8_t PPS[] = { 0x68, 0xCE, 0x38, 0x80 };
-        
         auto SendNal = [this](const uint8_t* nal, size_t size) {
             auto pkt = std::make_shared<rtp::RtpPacket>();
             uint8_t* data = pkt->data.get();
-            
+
             memcpy(data + rtp::RTP_HEADER_SIZE, nal, size);
-            
+
             pkt->size = rtp::RTP_HEADER_SIZE + size;
             pkt->timestamp = context_.rtp_timestamp;
             pkt->type = 0;
             pkt->last = 1;
-            
+
             rtp_transport_->SendRtpPacket(rtp::MediaChannelId::channel_0, *pkt);
         };
-        
-        SendNal(SPS, sizeof(SPS));
-        SendNal(PPS, sizeof(PPS));
+
+        if (!real_sps_.empty()) {
+            SendNal(real_sps_.data(), real_sps_.size());
+            LOG_RTSP_INFO_AT("Sent real SPS ({} bytes)", real_sps_.size());
+        }
+        if (!real_pps_.empty()) {
+            SendNal(real_pps_.data(), real_pps_.size());
+            LOG_RTSP_INFO_AT("Sent real PPS ({} bytes)", real_pps_.size());
+        }
     }
 
     std::string RtspSession::HandleTeardown(const std::map<std::string, std::string>& headers) {
@@ -382,18 +486,16 @@ namespace rtsp {
             return std::pair{ "", "" };
         }
 
-        // 第一部分
         auto start_part = str.substr(0, separator);
 
         auto end_part = str.substr(separator + 1);
-        // 去除末尾的分隔符和空白等
         const char* delimiters = ";\r\n\t";
         const auto last_valid = end_part.find_last_not_of(delimiters);
         if (last_valid != std::string::npos) {
             end_part = end_part.substr(0, last_valid + 1);
         }
         else {
-            end_part.clear();   // 没有有效字符，清空
+            end_part.clear();
         }
         return std::pair{ std::move(start_part), std::move(end_part) };
     }
@@ -406,29 +508,45 @@ namespace rtsp {
         return BuildResponse(resp, context_.cseq);
     }
 
-    std::shared_ptr<rtp::RtpPacket> RtspSession::GenerateTestFrame() {
-        static uint32_t frame_count = 0;
-        
-        constexpr size_t FRAME_SIZE = 1024;
-        
-        auto pkt = std::make_shared<rtp::RtpPacket>();
-        uint8_t* data = pkt->data.get();
-        
-        data[rtp::RTP_HEADER_SIZE] = 0x65;
-        
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(0, 255);
-        for (size_t i = rtp::RTP_HEADER_SIZE + 1; i < rtp::RTP_HEADER_SIZE + FRAME_SIZE; ++i) {
-            data[i] = static_cast<uint8_t>(dis(gen));
+    std::shared_ptr<rtp::RtpPacket> RtspSession::ProduceNextPacket() {
+        if (packet_queue_.HasData()) {
+            return packet_queue_.Pop();
         }
-        
-        pkt->size = rtp::RTP_HEADER_SIZE + FRAME_SIZE;
-        pkt->timestamp = context_.rtp_timestamp + frame_count * 3600;
-        pkt->type = (frame_count % 50 == 0) ? rtp::VIDEO_FRAME_I : rtp::VIDEO_FRAME_P;
-        pkt->last = 1;
-        
-        frame_count++;
-        return pkt;
+
+        if (nal_source_) {
+            FeedNextNALFrame();
+        }
+
+        if (packet_queue_.HasData()) {
+            return packet_queue_.Pop();
+        }
+
+        return nullptr;
+    }
+
+    void RtspSession::FeedNextNALFrame() {
+        if (!nal_source_ || !h264_source_) return;
+
+        auto frame = nal_source_->ReadNextFrame();
+        if (!frame) {
+            LOG_RTSP_INFO_AT("Video file end, looping from start");
+            frame_index_ = 0;
+            nal_source_->Reset();
+            frame = nal_source_->ReadNextFrame();
+            if (!frame) return;
+        }
+
+        uint32_t ts = context_.rtp_timestamp + frame_index_ * (90000 / nal_source_->GetFrameRate());
+
+        for (auto& nal : *frame) {
+            rtp::NALFrame nal_frame(static_cast<uint32_t>(nal.size));
+            std::memcpy(nal_frame.buffer.get(), nal.data.get(), nal.size);
+            nal_frame.type = nal.is_keyframe ? rtp::VIDEO_FRAME_I : rtp::VIDEO_FRAME_P;
+            nal_frame.timestamp = ts;
+
+            h264_source_->HandleFrame(rtp::MediaChannelId::channel_0, nal_frame);
+        }
+
+        frame_index_++;
     }
 }

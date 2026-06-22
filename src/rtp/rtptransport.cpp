@@ -1,10 +1,11 @@
 #include "rtp/rtptransport.h"
+#include <cstdio>
 namespace rtp{
-AsioRtpTransport::AsioRtpTransport(boost::asio::io_context& io_context)
+AsioRtpTransport::AsioRtpTransport(asio::io_context& io_context)
     : io_context_(io_context)
 {
     for (int i = 0; i < MAX_MEDIA_CHANNEL; ++i) {
-        timers_.push_back(boost::asio::steady_timer(io_context));
+        timers_.push_back(asio::steady_timer(io_context));
         frame_providers_.push_back(nullptr);
         frame_rates_.push_back(25);
         is_loop_running_.push_back(false);
@@ -230,7 +231,7 @@ void AsioRtpTransport::StartEventLoop(MediaChannelId channel_id) {
     auto interval = std::chrono::milliseconds(1000 / frame_rates_[channel_id]);
     timers_[channel_id].expires_after(interval);
     timers_[channel_id].async_wait(
-        [this, channel_id](const boost::system::error_code& ec) {
+        [this, channel_id](const asio::error_code& ec) {
             OnTimer(ec, channel_id);
         }
     );
@@ -241,7 +242,7 @@ void AsioRtpTransport::StopEventLoop(MediaChannelId channel_id) {
     timers_[channel_id].cancel();
 }
 
-void AsioRtpTransport::OnTimer(const boost::system::error_code& ec, MediaChannelId channel_id) {
+void AsioRtpTransport::OnTimer(const asio::error_code& ec, MediaChannelId channel_id) {
     if (ec) {
         return;
     }
@@ -268,7 +269,7 @@ void AsioRtpTransport::OnTimer(const boost::system::error_code& ec, MediaChannel
         auto interval = std::chrono::milliseconds(1000 / frame_rates_[channel_id]);
         timers_[channel_id].expires_after(interval);
         timers_[channel_id].async_wait(
-            [this, channel_id](const boost::system::error_code& ec) {
+            [this, channel_id](const asio::error_code& ec) {
                 OnTimer(ec, channel_id);
             }
         );

@@ -68,6 +68,16 @@ struct RtspContext {
     int rtcp_channel = 1;
 };
 
+enum class ConnectionState {
+    kConnected,
+    kOptions,
+    kDescribe,
+    kSetup,
+    kPlay,
+    kRecord,
+    kStreaming
+};
+
 class RtspProtocol {
 public:
     static std::string BuildResponse(const RtspResponse& response, const std::string& cseq);

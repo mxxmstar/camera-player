@@ -1,8 +1,7 @@
 #pragma once
 #include "rtp/irtptransport.h"
 #include "rtp/rtpsender.h"
-#include <boost/asio.hpp>
-#include <boost/asio/steady_timer.hpp>
+#include <asio.hpp>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -24,7 +23,7 @@ using FrameProvider = std::function<std::shared_ptr<rtp::RtpPacket>()>;
 class AsioRtpTransport : public IRtpTransport, public std::enable_shared_from_this<AsioRtpTransport> {
 public:
     using Ptr = std::shared_ptr<AsioRtpTransport>;
-    explicit AsioRtpTransport(boost::asio::io_context& io_context);
+    explicit AsioRtpTransport(asio::io_context& io_context);
     ~AsioRtpTransport() override;
 
     /// @brief 设置 RTP 发送器
@@ -78,9 +77,9 @@ private:
 
     void StartEventLoop(MediaChannelId channel_id);
     void StopEventLoop(MediaChannelId channel_id);
-    void OnTimer(const boost::system::error_code& ec, MediaChannelId channel_id);
+    void OnTimer(const asio::error_code& ec, MediaChannelId channel_id);
 
-    boost::asio::io_context& io_context_;
+    asio::io_context& io_context_;
     IRtpSender::Ptr sender_;    
 
     bool is_multicast_ = false;
@@ -94,7 +93,7 @@ private:
     /// @brief 事件循环定时器
     /// @details 用于定时发送 RTP 包
     /// @details 每个媒体通道都有一个定时器，定时器间隔根据帧率计算
-    std::vector<boost::asio::steady_timer> timers_;
+    std::vector<asio::steady_timer> timers_;
     std::vector<FrameProvider> frame_providers_;
     std::vector<uint32_t> frame_rates_;
     /// @brief 是否正在运行事件循环

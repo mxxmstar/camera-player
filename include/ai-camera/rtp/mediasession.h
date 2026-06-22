@@ -7,7 +7,7 @@
 #include <mutex>
 #include <unordered_set>
 #include <random>
-#include <boost/asio.hpp>
+#include <asio.hpp>
 #include "rtp/h264source.h"
 #include "rtp/media.h"
 namespace rtp {
@@ -21,8 +21,8 @@ public:
 	using NotifyDisconnectCallback = std::function<void(MediaSessionId session_id, 
 		const std::string& peer_ip, uint16_t peer_port)>;
 
-	// static Ptr Create(boost::asio::io_context& io_context, std::string url_suffix = "live");
-	explicit AsioMediaSession(boost::asio::io_context& io_context, std::string url_suffix);
+	// static Ptr Create(asio::io_context& io_context, std::string url_suffix = "live");
+	explicit AsioMediaSession(asio::io_context& io_context, std::string url_suffix);
 	virtual ~AsioMediaSession();
 
 	// 禁止拷贝和移动
@@ -39,9 +39,9 @@ public:
 
 	bool HandleFrame(MediaChannelId channel_id, NALFrame frame);
 
-	bool AddClient(boost::asio::ip::tcp::socket& socket, std::shared_ptr<AsioRtpTransport> client);
-	void RemoveClient(boost::asio::ip::tcp::socket& socket);
-	std::shared_ptr<AsioRtpTransport> GetClient(boost::asio::ip::tcp::socket& socket);
+	bool AddClient(asio::ip::tcp::socket& socket, std::shared_ptr<AsioRtpTransport> client);
+	void RemoveClient(asio::ip::tcp::socket& socket);
+	std::shared_ptr<AsioRtpTransport> GetClient(asio::ip::tcp::socket& socket);
 	uint32_t GetClientCount();
 	
 	/// @brief  启动多播	
@@ -76,7 +76,7 @@ private:
     void DispatchToClients(MediaChannelId channel_id, RtpPacket packet);	
 
 	/// @brief IO上下文
-	boost::asio::io_context& io_context_;        
+	asio::io_context& io_context_;        
 	/// @brief 会话ID
 	MediaSessionId session_id_ = 0;
 	/// @brief Rtsp URL后缀

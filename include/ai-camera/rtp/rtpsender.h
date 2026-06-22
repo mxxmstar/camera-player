@@ -1,7 +1,7 @@
 #pragma once
 #include "rtp/rtp.h"
 #include "rtp/media.h"
-#include <boost/asio.hpp>
+#include <asio.hpp>
 #include <memory>
 #include <vector>
 #include <array>
@@ -27,7 +27,7 @@ public:
 class AsioTcpRtpSender : public IRtpSender {
 public:
     /// @brief 创建一个tcp发送器,传入socket引用,保持生命期一致
-    explicit AsioTcpRtpSender(boost::asio::ip::tcp::socket& socket);
+    explicit AsioTcpRtpSender(asio::ip::tcp::socket& socket);
     int Send(MediaChannelId channel, const RtpPacket& pkt) override;
     /// @brief 获取对端的ip
     std::string GetPeerIp() const override;
@@ -36,12 +36,12 @@ public:
     /// @brief 获取本地端口, tcp: 返回0（复用rtsp的socket）
     uint16_t GetLocalPort() const override;
 private:
-    boost::asio::ip::tcp::socket& socket_;
+    asio::ip::tcp::socket& socket_;
 };
 
 class AsioUdpRtpSender : public IRtpSender {
 public:
-    AsioUdpRtpSender(boost::asio::io_context& io_context, const std::string& peer_ip,
+    AsioUdpRtpSender(asio::io_context& io_context, const std::string& peer_ip,
                      uint16_t peer_rtp_port, uint16_t peer_rtcp_port);
     int Send(MediaChannelId channel, const RtpPacket& pkt) override;
     /// @brief 获取目标ip
@@ -51,16 +51,16 @@ public:
     /// @brief 获取本地绑定的rtp端口
     uint16_t GetLocalPort() const override;
 private:
-    boost::asio::io_context& io_context_;
+    asio::io_context& io_context_;
     std::string peer_ip_;
     uint16_t peer_rtp_port_;
     uint16_t peer_rtcp_port_;
-    std::unique_ptr<boost::asio::ip::udp::socket> socket_;
+    std::unique_ptr<asio::ip::udp::socket> socket_;
 };
 
 class AsioMulticastRtpSender : public IRtpSender {
 public:
-    AsioMulticastRtpSender(boost::asio::io_context& io_context,
+    AsioMulticastRtpSender(asio::io_context& io_context,
                            const std::string& multicast_ip,
                            uint16_t port);
     int Send(MediaChannelId channel, const RtpPacket& pkt) override;
@@ -71,9 +71,9 @@ public:
     /// @brief 获取本地绑定的rtp端口
     uint16_t GetLocalPort() const override;
 private:
-    boost::asio::io_context& io_context_;
+    asio::io_context& io_context_;
     std::string multicast_ip_;
     uint16_t multicast_port_;    
-    std::unique_ptr<boost::asio::ip::udp::socket> socket_;
+    std::unique_ptr<asio::ip::udp::socket> socket_;
 };
 }

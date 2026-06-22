@@ -3,7 +3,7 @@
 #include "rtp/mediasession.h"
 namespace rtsp {
 
-RtspServer::RtspServer(boost::asio::io_context& io_context, 
+RtspServer::RtspServer(asio::io_context& io_context, 
                        AsioIOContextPool& work_pool, 
                        uint16_t port)
     : server_(io_context, work_pool, port) {
@@ -12,21 +12,28 @@ RtspServer::RtspServer(boost::asio::io_context& io_context,
 
 void RtspServer::Start() {
     LOG_RTSP_INFO_AT("RtspServer starting...");
-    server_.SetAcceptHandler([this](boost::asio::ip::tcp::socket socket) {
+    server_.SetAcceptHandler([this](asio::ip::tcp::socket socket) {
         OnCreateSession(std::move(socket));
     });
     server_.Start();
 }
 
-void RtspServer::OnCreateSession(boost::asio::ip::tcp::socket socket) {
+void RtspServer::OnCreateSession(asio::ip::tcp::socket socket) {
     try {
         LOG_RTSP_INFO_AT("New RTSP connection from: {}", 
                         socket.remote_endpoint().address().to_string());
 
         auto session = std::make_shared<RtspSession>(std::move(socket));
-        std::vector<std::shared_ptr<rtp::RTPSource>> sources;
-        sources.push_back(std::make_shared<rtp::H264Source>(25));
-        session->SetRTPSources(sources);
+
+        if (!video_filepath_.empty()) {
+            session->LoadVideoFile(video_filepath_);
+        }
+        if (!session->HasVideoFile()) {
+            std::vector<std::shared_ptr<rtp::RTPSource>> sources;
+            sources.push_back(std::make_shared<rtp::H264Source>(25));
+            session->SetRTPSources(sources);
+        }
+
         session->SetCloseHandler([this, session]() {
             LOG_RTSP_INFO_AT("RTSP session closed: {}", session->GetSessionID());
         });

@@ -30,6 +30,33 @@ std::string RtspProtocol::BuildResponse(const RtspResponse& response, const std:
 }
 
 bool RtspProtocol::ParseRequest(const std::string& request_str, RtspRequest& request) {
+    std::istringstream iss(request_str);
+    std::string request_line;
+    std::getline(iss, request_line);
+    if (!request_line.empty() && request_line.back() == '\r') {
+        request_line.pop_back();
+    }
+
+    if (!ParseRtspRequestLine(request_line, request.method, request.url, request.version)) {
+        return false;
+    }
+
+    request.headers = ParseHeaders(request_str);
+
+    auto content_length_it = request.headers.find("Content-Length");
+    if (content_length_it != request.headers.end()) {
+        size_t body_size = std::stoul(content_length_it->second);
+        std::string line;
+        std::ostringstream body_ss;
+        while (std::getline(iss, line)) {
+            body_ss << line;
+        }
+        request.body = body_ss.str();
+        if (request.body.size() > body_size) {
+            request.body.resize(body_size);
+        }
+    }
+
     return true;
 }
 

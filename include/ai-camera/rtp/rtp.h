@@ -1,7 +1,7 @@
 #pragma once
 #include <memory>
 #include <cstdint>
-#include <boost/asio.hpp>
+#include <string>
 #include <variant>
 namespace rtp {
 /// @brief RTP包头部大小

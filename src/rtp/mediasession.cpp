@@ -4,7 +4,7 @@ namespace rtp {
 
 static const int DEFAULT_MULTICAST_PORT = 5000;
 
-AsioMediaSession::AsioMediaSession(boost::asio::io_context& io_context, std::string url_suffix)
+AsioMediaSession::AsioMediaSession(asio::io_context& io_context, std::string url_suffix)
     : io_context_(io_context), url_suffix_(std::move(url_suffix)), session_id_(++last_session_id_)
     , media_sources_(MAX_MEDIA_CHANNEL), has_new_client_(false), is_multicast_started_(false)
 {
@@ -13,7 +13,7 @@ AsioMediaSession::AsioMediaSession(boost::asio::io_context& io_context, std::str
     }
 }
 
-// AsioMediaSession::Ptr AsioMediaSession::Create(boost::asio::io_context& io_context, std::string url_suffix)
+// AsioMediaSession::Ptr AsioMediaSession::Create(asio::io_context& io_context, std::string url_suffix)
 // {
 //     return std::make_shared<AsioMediaSession>(io_context, std::move(url_suffix));
 // }
@@ -83,7 +83,7 @@ bool AsioMediaSession::HandleFrame(MediaChannelId channel_id, NALFrame frame) {
     return source->HandleFrame(channel_id, frame);
 }
 
-bool AsioMediaSession::AddClient(boost::asio::ip::tcp::socket& socket, std::shared_ptr<AsioRtpTransport> client) {
+bool AsioMediaSession::AddClient(asio::ip::tcp::socket& socket, std::shared_ptr<AsioRtpTransport> client) {
     std::lock_guard<std::mutex> lock(client_mutex_);
 
     // 使用SOCKET句柄作为客户端ID
@@ -109,7 +109,7 @@ bool AsioMediaSession::AddClient(boost::asio::ip::tcp::socket& socket, std::shar
     return true;
 }
 
-void AsioMediaSession::RemoveClient(boost::asio::ip::tcp::socket& socket) {
+void AsioMediaSession::RemoveClient(asio::ip::tcp::socket& socket) {
     std::lock_guard<std::mutex> lock(client_mutex_);
 
     // 使用SOCKET句柄作为客户端ID
@@ -131,7 +131,7 @@ void AsioMediaSession::RemoveClient(boost::asio::ip::tcp::socket& socket) {
     clients_.erase(it);
 }
 
-std::shared_ptr<AsioRtpTransport> AsioMediaSession::GetClient(boost::asio::ip::tcp::socket& socket) {
+std::shared_ptr<AsioRtpTransport> AsioMediaSession::GetClient(asio::ip::tcp::socket& socket) {
     std::lock_guard<std::mutex> lock(client_mutex_);
 
     // 使用SOCKET句柄作为客户端ID

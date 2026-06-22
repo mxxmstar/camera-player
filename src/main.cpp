@@ -1,31 +1,68 @@
 #include "server/http/server.hpp"
+#include "rtsp/rtspmgr.h"
 
 #include <csignal>
 #include <iostream>
 #include <memory>
+#include <string>
 
-static std::unique_ptr<http::Server> g_server;
+static std::unique_ptr<http::Server> g_http_server;
+static std::string g_video_file;
 
 static void signal_handler(int /*signum*/)
 {
     std::cout << "\n[Main] Caught signal, shutting down..." << std::endl;
-    if (g_server)
-        g_server->stop();
+    if (g_http_server)
+        g_http_server->stop();
+    rtsp::RtspManager::Instance().Stop();
 }
 
-int main()
+static void print_usage(const char* prog)
 {
+    std::cout << "Usage: " << prog << " [options]\n"
+              << "Options:\n"
+              << "  --video <file>   Raw H.264 video file to stream via RTSP\n"
+              << "  --help           Show this help\n"
+              << std::endl;
+}
+
+int main(int argc, char* argv[])
+{
+    for (int i = 1; i < argc; ++i) {
+        std::string arg(argv[i]);
+        if (arg == "--video" && i + 1 < argc) {
+            g_video_file = argv[++i];
+        } else if (arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        }
+    }
+    if (g_video_file.empty()) {
+        g_video_file = "test.h264";
+    }
     // ------------------------------------------------------------
-    // 1. Create server on port 8080
+    // 1. Start RTSP server on port 8554
     // ------------------------------------------------------------
-    g_server = std::make_unique<http::Server>("0.0.0.0", 8080);
+    std::cout << "[Main] Starting RTSP server on rtsp://localhost:8554" << std::endl;
+    auto& rtsp_mgr = rtsp::RtspManager::Instance();
+
+    if (!g_video_file.empty()) {
+        rtsp_mgr.SetVideoFile(g_video_file);
+        std::cout << "[Main] Video file: " << g_video_file << std::endl;
+    }
+
+    rtsp_mgr.Start(8554);
 
     // ------------------------------------------------------------
-    // 2. Register routes
+    // 2. Create HTTP server on port 8080
     // ------------------------------------------------------------
-    auto &router = g_server->router();
+    g_http_server = std::make_unique<http::Server>("0.0.0.0", 8080);
 
-    // GET /
+    // ------------------------------------------------------------
+    // 3. Register routes
+    // ------------------------------------------------------------
+    auto &router = g_http_server->router();
+
     router.get("/",
         [](const http::Request & /*req*/) -> http::Response
         {
@@ -34,25 +71,18 @@ int main()
                 "<head><title>ai-camera</title></head>"
                 "<body>"
                 "<h1>Welcome to ai-camera!</h1>"
-                "<p>Try these endpoints:</p>"
-                "<ul>"
-                "<li><a href='/hello'>/hello</a></li>"
-                "<li><a href='/json'>/json</a></li>"
-                "<li><a href='/echo'>/echo (POST)</a></li>"
-                "</ul>"
+                "<p>RTSP stream available at: <b>rtsp://localhost:8554/live</b></p>"
                 "</body>"
                 "</html>",
                 "text/html");
         });
 
-    // GET /hello
     router.get("/hello",
         [](const http::Request & /*req*/) -> http::Response
         {
             return http::Response::ok("Hello, ASIO HTTP Server!\n");
         });
 
-    // GET /json
     router.get("/json",
         [](const http::Request & /*req*/) -> http::Response
         {
@@ -61,7 +91,6 @@ int main()
                 "application/json");
         });
 
-    // POST /echo — echoes back the body
     router.post("/echo",
         [](const http::Request &req) -> http::Response
         {
@@ -69,16 +98,16 @@ int main()
         });
 
     // ------------------------------------------------------------
-    // 3. Register signal handlers for graceful shutdown
+    // 4. Register signal handlers for graceful shutdown
     // ------------------------------------------------------------
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     // ------------------------------------------------------------
-    // 4. Start the server (blocks)
+    // 5. Start the HTTP server (blocks)
     // ------------------------------------------------------------
     std::cout << "[Main] Starting HTTP server on http://localhost:8080" << std::endl;
-    g_server->run();
+    g_http_server->run();
 
     std::cout << "[Main] Server stopped. Goodbye!" << std::endl;
     return 0;
