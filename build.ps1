@@ -14,14 +14,17 @@ Set-Location e:\project\camera-player
 
 $cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 
+# Clean and reconfigure
 Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
 
 Write-Output "=== Configuring ==="
-& $cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug 2>&1 | Out-Host
+& $cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Output "CONFIGURE FAILED"; exit 1 }
 
 Write-Output "=== Building ==="
-& $cmake --build build --config Debug 2>&1 | Out-Host
+& $cmake --build build --config Debug 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Output "BUILD FAILED"; exit 1 }
 
 Write-Output "=== SUCCESS ==="
+Write-Output "Binary: build\Debug\ai-camera.exe"
+Write-Output "Run:    build\Debug\ai-camera.exe"

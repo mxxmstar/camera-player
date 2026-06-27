@@ -20,29 +20,17 @@ enum TransportMode
     RTP_OVER_MULTICAST = 3, // 组播 UDP
 };
 
-/// @brief RTP包头部是否为大端序
-#define RTP_HEADER_BIG_ENDIAN 0
 struct RtpHeader {
-#if RTP_HEADER_BIG_ENDIAN
-    /* 大端序 */
-    unsigned char version   : 2;
-    unsigned char padding   : 1;
-    unsigned char extension : 1;
-    unsigned char csrc      : 4;
-    unsigned char marker    : 1;
-    unsigned char payload   : 7;
-#else
-    /* 小端序 */
-    unsigned char csrc      : 4;
-    unsigned char extension : 1;
-    unsigned char padding   : 1;
-    unsigned char version   : 2;
-    unsigned char payload   : 7;
-    unsigned char marker    : 1;
-#endif 
+    // 注意：位域布局依赖编译器，这里仅用于内存映射
+    // 实际 RTP 头部字节序由 FillRtpHeader 手动控制
+    unsigned char first_byte;   // version(2) | padding(1) | extension(1) | csrc_count(4)
+    unsigned char second_byte;  // marker(1) | payload_type(7)
     unsigned short seq;
     unsigned int   ts;
     unsigned int   ssrc;
+    
+    // 存储 payload type（不直接参与网络传输，用于构建 second_byte）
+    unsigned char payload = 0;
 };
 
 
@@ -71,17 +59,17 @@ struct MediaChannelInfo
 {
     RtpHeader rtp_header;	// 该通道RTP包头部
 
-    uint16_t packet_seq;	// 该通道RTP包序号
-    uint32_t clock_rate;	// 该通道RTP包时钟率
+    uint16_t packet_seq = 0;	// 该通道RTP包序号
+    uint32_t clock_rate = 0;	// 该通道RTP包时钟率
 
     // rtcp
-    uint64_t packet_count;	// 该通道已发送RTP包数量
-    uint64_t octet_count;	// 该通道已发送RTP包字节数, 不包含RTP包头部
-    uint64_t last_rtcp_ntp_time;	// 该通道上次发送RTCP包时间, 单位为秒
+    uint64_t packet_count = 0;	// 该通道已发送RTP包数量
+    uint64_t octet_count = 0;	// 该通道已发送RTP包字节数, 不包含RTP包头部
+    uint64_t last_rtcp_ntp_time = 0;	// 该通道上次发送RTCP包时间, 单位为秒
 
-    bool is_setup;	// 该通道是否已设置
-    bool is_playing;	// 该通道是否处于播放状态
-    bool is_recording;	// 该通道是否处于录制状态
+    bool is_setup = false;	// 该通道是否已设置
+    bool is_playing = false;	// 该通道是否处于播放状态
+    bool is_recording = false;	// 该通道是否处于录制状态
 
     std::variant<TcpTransportInfo, UdpTransportInfo, MulticastTransportInfo> transport_info;
     TransportMode transport_mode = TransportMode::RTP_OVER_TCP;

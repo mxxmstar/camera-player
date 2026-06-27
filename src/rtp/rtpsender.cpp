@@ -1,5 +1,5 @@
 #include "rtp/rtpsender.h"
-#include "rtsp/rtspmacro.h"
+#include "log/logger.h"
 #include <cstring>
 #include <asio.hpp>
 namespace rtp {
@@ -58,7 +58,7 @@ uint16_t AsioTcpRtpSender::GetLocalPort() const {
     asio::error_code ec;
     auto local_endpoint = socket_.local_endpoint(ec);
     if (ec) {
-        LOG_RTSP_ERROR_AT("AsioTcpRtpSender::GetLocalPort, error: {}", ec.message());
+        LOG_ERROR("AsioTcpRtpSender::GetLocalPort, error: {}", ec.message());
         return 0;
     }
     
@@ -101,7 +101,7 @@ uint16_t AsioUdpRtpSender::GetLocalPort() const {
     asio::error_code ec;
     auto local_endpoint = socket_->local_endpoint(ec);
     if (ec) {
-        LOG_RTSP_ERROR_AT("AsioUdpRtpSender::GetLocalPort, error: {}", ec.message());
+        LOG_ERROR("AsioUdpRtpSender::GetLocalPort, error: {}", ec.message());
         return 0;
     }
     
@@ -151,7 +151,7 @@ uint16_t AsioMulticastRtpSender::GetLocalPort() const {
     asio::error_code ec;
     auto local_endpoint = socket_->local_endpoint(ec);
     if (ec) {
-        LOG_RTSP_ERROR_AT("AsioMulticastRtpSender::GetLocalPort, error: {}", ec.message());
+        LOG_ERROR("AsioMulticastRtpSender::GetLocalPort, error: {}", ec.message());
         return 0;
     }
     

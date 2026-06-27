@@ -1,5 +1,7 @@
 #include "rtp/rtptransport.h"
+#include "log/logger.h"
 #include <cstdio>
+#include <iostream>
 namespace rtp{
 AsioRtpTransport::AsioRtpTransport(asio::io_context& io_context)
     : io_context_(io_context)
@@ -182,13 +184,17 @@ int AsioRtpTransport::SendRtp(MediaChannelId channel_id, RtpPacket pkt) {
 void AsioRtpTransport::FillRtpHeader(MediaChannelId channel_id, RtpPacket& pkt) { 
     auto& info = media_info_[channel_id];
 
-    RtpHeader* header = reinterpret_cast<RtpHeader*>(pkt.data.get() + 4);
-    header->version = RTP_VERSION;
-    header->padding = 0;
-    header->extension = 0;
-    header->csrc = 0;
-    header->marker = pkt.last ? 1 : 0;
-    header->payload = info.rtp_header.payload;
+    RtpHeader* header = reinterpret_cast<RtpHeader*>(pkt.data.get() + RTP_TCP_HEAD_SIZE);
+    
+    // 手动构建第一个字节: version(2) | padding(1) | extension(1) | csrc_count(4)
+    // RTP 头部在网络传输中是大端序（高位在前）
+    // version=2 (0b10), padding=0, extension=0, csrc=0
+    // 所以 first_byte = 0b10000000 = 0x80
+    header->first_byte = (RTP_VERSION << 6) | (0 << 5) | (0 << 4) | (0 & 0x0F);
+    
+    // 手动构建第二个字节: marker(1) | payload_type(7)
+    header->second_byte = (pkt.last ? 1 : 0) << 7 | (info.rtp_header.payload & 0x7F);
+    
     header->seq = htons(info.rtp_header.seq++);
     header->ts = htonl(pkt.timestamp);
     header->ssrc = htonl(info.rtp_header.ssrc);
@@ -201,11 +207,14 @@ void AsioRtpTransport::SetPlaying(MediaChannelId channel_id, bool playing) {
     
     if (playing) {
         if (!media_info_[channel_id].is_playing) {
+            LOG_INFO("[RTP] SetPlaying(true) ch={}, rate={}",
+                     static_cast<int>(channel_id), frame_rates_[channel_id]);
             media_info_[channel_id].is_playing = true;
             StartEventLoop(channel_id);
         }
     } else {
         if (media_info_[channel_id].is_playing) {
+            LOG_INFO("[RTP] SetPlaying(false) ch={}", static_cast<int>(channel_id));
             media_info_[channel_id].is_playing = false;
             StopEventLoop(channel_id);
         }
@@ -229,6 +238,7 @@ void AsioRtpTransport::StartEventLoop(MediaChannelId channel_id) {
     is_loop_running_[channel_id] = true;
     
     auto interval = std::chrono::milliseconds(1000 / frame_rates_[channel_id]);
+    LOG_DEBUG("[RTP] StartEventLoop ch={}, interval={}ms", static_cast<int>(channel_id), interval.count());
     timers_[channel_id].expires_after(interval);
     timers_[channel_id].async_wait(
         [this, channel_id](const asio::error_code& ec) {
@@ -244,6 +254,9 @@ void AsioRtpTransport::StopEventLoop(MediaChannelId channel_id) {
 
 void AsioRtpTransport::OnTimer(const asio::error_code& ec, MediaChannelId channel_id) {
     if (ec) {
+        if (ec.value() != asio::error::operation_aborted) {
+            LOG_WARN("[RTP] OnTimer error: {}", ec.message());
+        }
         return;
     }
 

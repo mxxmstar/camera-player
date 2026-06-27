@@ -1,17 +1,13 @@
 #include "server/ws/ws_server.hpp"
+#include "log/logger.h"
 
 #include <iostream>
 
 namespace ws {
 
-// ============================================================
-// 构造与析构
-// ============================================================
 WsServer::WsServer(asio::io_context* io_context,
                    const std::string& address,
                    unsigned short port)
-    // 成员初始化顺序与头文件声明顺序一致：
-    //   owns_io_context_ -> internal_io_ -> io_context_ -> acceptor_
     : owns_io_context_(io_context == nullptr),
       internal_io_(io_context ? nullptr : std::make_unique<asio::io_context>()),
       io_context_(io_context ? *io_context : *internal_io_),
@@ -23,41 +19,34 @@ WsServer::WsServer(asio::io_context* io_context,
             asio::executor_work_guard<asio::io_context::executor_type>>(
                 io_context_.get_executor());
     }
-    std::cout << "[WsServer] Will listen on " << address << ":" << port << std::endl;
+    LOG_INFO("[WsServer] Will listen on {}:{}", address, port);
 }
 
 WsServer::~WsServer() {
     Stop();
 }
 
-// ============================================================
-// 启动
-// ============================================================
 void WsServer::Start() {
     if (running_.exchange(true)) {
-        return; // 已在运行
+        return;
     }
 
     DoAccept();
 
-    // 若服务器自管理 io_context，则启动后台线程
     if (owns_io_context_) {
         io_thread_ = std::thread([this]() {
             try {
                 io_context_.run();
             } catch (const std::exception& e) {
-                std::cerr << "[WsServer] io_context exception: " << e.what() << std::endl;
+                LOG_ERROR("[WsServer] io_context exception: {}", e.what());
             }
         });
-        std::cout << "[WsServer] Started with internal io_context thread." << std::endl;
+        LOG_INFO("[WsServer] Started with internal io_context thread.");
     } else {
-        std::cout << "[WsServer] Started (using external io_context)." << std::endl;
+        LOG_INFO("[WsServer] Started (using external io_context).");
     }
 }
 
-// ============================================================
-// 停止
-// ============================================================
 void WsServer::Stop() {
     if (!running_.exchange(false)) {
         return;
@@ -66,7 +55,6 @@ void WsServer::Stop() {
     asio::error_code ec;
     acceptor_.close(ec);
 
-    // 关闭所有会话
     {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         for (auto& kv : sessions_) {
@@ -83,12 +71,9 @@ void WsServer::Stop() {
             io_thread_.join();
         }
     }
-    std::cout << "[WsServer] Stopped." << std::endl;
+    LOG_INFO("[WsServer] Stopped.");
 }
 
-// ============================================================
-// 接受连接
-// ============================================================
 void WsServer::DoAccept() {
     if (!running_) return;
 
@@ -97,7 +82,6 @@ void WsServer::DoAccept() {
             if (!ec) {
                 auto session = std::make_shared<WsSession>(std::move(socket), this);
 
-                // 将服务器的默认回调绑定到会话
                 if (on_open_)     session->SetOpenHandler(on_open_);
                 if (on_message_)  session->SetMessageHandler(on_message_);
                 if (on_ping_)     session->SetPingHandler(on_ping_);
@@ -106,10 +90,9 @@ void WsServer::DoAccept() {
                 AddSession(session);
                 session->Start();
             } else if (ec != asio::error::operation_aborted) {
-                std::cerr << "[WsServer] Accept error: " << ec.message() << std::endl;
+                LOG_ERROR("[WsServer] Accept error: {}", ec.message());
             }
 
-            // 继续接受下一个连接
             if (running_) {
                 DoAccept();
             }

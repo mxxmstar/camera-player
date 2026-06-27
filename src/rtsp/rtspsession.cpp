@@ -1,12 +1,12 @@
 #include "rtsp/rtspsession.h"
 #include "rtsp/rtsp.h"
-#include "rtsp/rtspmacro.h"
 #include "rtp/rtptransport.h"
 #include "rtp/rtpsender.h"
 #include "rtp/media.h"
 #include "rtp/h264source.h"
 #include "rtp/nalsource.h"
 #include "rtp/rawh264source.h"
+#include "log/logger.h"
 #include <sstream>
 #include <chrono>
 #include <random>
@@ -17,7 +17,7 @@ namespace rtsp {
 
     RtspSession::RtspSession(asio::ip::tcp::socket socket)
         : AsioTCPSession(std::move(socket)) {
-        LOG_RTSP_INFO_AT("RtspSession created, session_id: {}", GetSessionID());
+        LOG_INFO("RtspSession created, session_id: {}", GetSessionID());
     }
 
     void RtspSession::SetRTPSources(const std::vector<std::shared_ptr<rtp::RTPSource>>& sources) {
@@ -29,7 +29,7 @@ namespace rtsp {
 
         nal_source_ = std::make_shared<rtp::RawH264NALSource>();
         if (!nal_source_->Open(filepath)) {
-            LOG_RTSP_ERROR_AT("Failed to open video file: {}", filepath);
+            LOG_ERROR("Failed to open video file: {}", filepath);
             nal_source_.reset();
             return;
         }
@@ -63,7 +63,7 @@ namespace rtsp {
         media_sources_.clear();
         media_sources_.push_back(h264_source_);
 
-        LOG_RTSP_INFO_AT("Video file loaded: {} ({}fps, {}x{})",
+        LOG_INFO("Video file loaded: {} ({}fps, {}x{})",
             filepath,
             nal_source_->GetFrameRate(),
             nal_source_->GetWidth(),
@@ -115,19 +115,19 @@ namespace rtsp {
     }
 
     void RtspSession::OnClose() {
-        LOG_RTSP_INFO_AT("RtspSession closed, session_id: {}", GetSessionID());
+        LOG_INFO("RtspSession closed, session_id: {}", GetSessionID());
     }
 
     void RtspSession::HandleRtcpData(const uint8_t* data, size_t size) {
-        LOG_RTSP_INFO_AT("Received RTCP data over interleaved, size: {}", size);
+        LOG_INFO("Received RTCP data over interleaved, size: {}", size);
     }
 
     void RtspSession::HandleRtpData(const uint8_t* data, size_t size) {
-        LOG_RTSP_INFO_AT("Received RTP data over interleaved, size: {}", size);
+        LOG_INFO("Received RTP data over interleaved, size: {}", size);
     }
 
     void RtspSession::HandleRtspRequest(const std::string& request) {
-        LOG_RTSP_INFO_AT("handleRtspRequest: {}", request);
+        LOG_INFO("handleRtspRequest: {}", request);
         std::istringstream iss(request);
         std::string request_line;
         std::getline(iss, request_line);
@@ -136,7 +136,7 @@ namespace rtsp {
         std::string url;
         std::string version;
         if (!RtspProtocol::ParseRtspRequestLine(request_line, method, url, version)) {
-            LOG_RTSP_ERROR_AT("Invalid RTSP request line: {}", request_line);
+            LOG_ERROR("Invalid RTSP request line: {}", request_line);
             RtspResponse resp;
             resp.status_code = static_cast<int>(RtspStatus::BadRequest);
             resp.status_reason = "Bad Request";
@@ -153,7 +153,7 @@ namespace rtsp {
             }
             catch (const std::exception& e) {
                 context_.cseq = "";
-                LOG_RTSP_ERROR_AT("Invalid CSeq: {}", headers["CSeq"]);
+                LOG_ERROR("Invalid CSeq: {}", headers["CSeq"]);
             }
         }
 
@@ -242,7 +242,7 @@ namespace rtsp {
     std::string RtspSession::HandleSetup(const std::map<std::string, std::string>& headers) {
         auto transport_it = headers.find("Transport");
         if (transport_it == headers.end()) {
-            LOG_RTSP_ERROR_AT("Transport header not found in SETUP request");
+            LOG_ERROR("Transport header not found in SETUP request");
             RtspResponse resp;
             resp.status_code = static_cast<int>(RtspStatus::BadRequest);
             resp.status_reason = "Bad Request";
@@ -250,7 +250,7 @@ namespace rtsp {
         }
 
         std::string transport_header = transport_it->second;
-        LOG_RTSP_INFO_AT("Transport header: {}", transport_header);
+        LOG_INFO("Transport header: {}", transport_header);
 
         if (context_.session_id.empty()) {
             context_.session_id = GetSessionID();
@@ -269,7 +269,7 @@ namespace rtsp {
                 if (pos2 != std::string::npos) {
                     context_.rtp_channel = std::stoi(interleaved_str.substr(0, pos2));
                 } else {
-                    LOG_RTSP_ERROR_AT("Invalid interleaved parameter: {}", interleaved_str);
+                    LOG_ERROR("Invalid interleaved parameter: {}", interleaved_str);
                     context_.rtp_channel = 0;
                     context_.rtcp_channel = 1;
                 }
@@ -284,7 +284,7 @@ namespace rtsp {
             context_.mode = rtp::TransportMode::RTP_OVER_UDP;
             auto client_port_it = transport_header.find("client_port=");
             if (client_port_it == std::string::npos) {
-                LOG_RTSP_ERROR_AT("client_port header not found in UDP SETUP request");
+                LOG_ERROR("client_port header not found in UDP SETUP request");
                 RtspResponse resp;
                 resp.status_code = static_cast<int>(RtspStatus::BadRequest);
                 resp.status_reason = "Bad Request";
@@ -292,7 +292,7 @@ namespace rtsp {
             }
             auto client_port_pair = parseRangeNum(transport_header.substr(client_port_it + 12));
             if (client_port_pair.first.empty() || client_port_pair.second.empty()) {
-                LOG_RTSP_ERROR_AT("Invalid client-Port range: {}", transport_header.substr(client_port_it + 12));
+                LOG_ERROR("Invalid client-Port range: {}", transport_header.substr(client_port_it + 12));
                 RtspResponse resp;
                 resp.status_code = static_cast<int>(RtspStatus::BadRequest);
                 resp.status_reason = "Bad Request";
@@ -303,7 +303,7 @@ namespace rtsp {
         } else if (is_multi) {
             context_.mode = rtp::TransportMode::RTP_OVER_MULTICAST;
         } else {
-            LOG_RTSP_ERROR_AT("Invalid Transport header: {}", transport_header);
+            LOG_ERROR("Invalid Transport header: {}", transport_header);
             RtspResponse resp;
             resp.status_code = static_cast<int>(RtspStatus::BadRequest);
             resp.status_reason = "Bad Request";
@@ -331,7 +331,7 @@ namespace rtsp {
             rtp_transport_->SetPayloadType(rtp::MediaChannelId::channel_0, 96);
             rtp_transport_->SetSsrc(rtp::MediaChannelId::channel_0, static_cast<uint32_t>(std::rand()));
             rtp_transport_->Start();
-            LOG_RTSP_INFO_AT("RTP over TCP transport created for channel {}", context_.rtp_channel);
+            LOG_INFO("RTP over TCP transport created for channel {}", context_.rtp_channel);
 
             resp.headers["Transport"] = "RTP/AVP/TCP;interleaved=" +
                 std::to_string(context_.rtp_channel) + "-" +
@@ -349,7 +349,7 @@ namespace rtsp {
             rtp_transport_->SetPayloadType(rtp::MediaChannelId::channel_0, 96);
             rtp_transport_->SetSsrc(rtp::MediaChannelId::channel_0, static_cast<uint32_t>(std::rand()));
             rtp_transport_->Start();
-            LOG_RTSP_INFO_AT("RTP over UDP transport created");
+            LOG_INFO("RTP over UDP transport created");
 
             resp.headers["Transport"] = "RTP/AVP;unicast;client_port=" +
                 std::to_string(context_.client_rtp_port) + "-" +
@@ -427,9 +427,9 @@ namespace rtsp {
             auto pkt = std::make_shared<rtp::RtpPacket>();
             uint8_t* data = pkt->data.get();
 
-            memcpy(data + rtp::RTP_HEADER_SIZE, nal, size);
+            memcpy(data + rtp::RTP_TCP_HEAD_SIZE + rtp::RTP_HEADER_SIZE, nal, size);
 
-            pkt->size = rtp::RTP_HEADER_SIZE + size;
+            pkt->size = rtp::RTP_TCP_HEAD_SIZE + rtp::RTP_HEADER_SIZE + size;
             pkt->timestamp = context_.rtp_timestamp;
             pkt->type = 0;
             pkt->last = 1;
@@ -439,11 +439,11 @@ namespace rtsp {
 
         if (!real_sps_.empty()) {
             SendNal(real_sps_.data(), real_sps_.size());
-            LOG_RTSP_INFO_AT("Sent real SPS ({} bytes)", real_sps_.size());
+            LOG_INFO("Sent real SPS ({} bytes)", real_sps_.size());
         }
         if (!real_pps_.empty()) {
             SendNal(real_pps_.data(), real_pps_.size());
-            LOG_RTSP_INFO_AT("Sent real PPS ({} bytes)", real_pps_.size());
+            LOG_INFO("Sent real PPS ({} bytes)", real_pps_.size());
         }
     }
 
@@ -531,7 +531,7 @@ namespace rtsp {
 
         auto frame = nal_source_->ReadNextFrame();
         if (!frame) {
-            LOG_RTSP_INFO_AT("Video file end, looping from start");
+            LOG_INFO("Video file end, looping from start");
             frame_index_ = 0;
             nal_source_->Reset();
             frame = nal_source_->ReadNextFrame();

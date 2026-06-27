@@ -2,7 +2,7 @@
 #include "server/http/http_parser.hpp"
 #include "server/http/http_response.hpp"
 
-#include <iostream>
+#include "log/logger.h"
 
 namespace http {
 
@@ -12,10 +12,10 @@ Session::Session(asio::ip::tcp::socket socket, const Router &router)
 }
 
 void Session::start()
-{
-    std::cout << "[Session] New connection from "
-              << socket_.remote_endpoint().address().to_string() << ":"
-              << socket_.remote_endpoint().port() << std::endl;
+{    
+    LOG_INFO("[Session] New connection from {}:{}",
+            socket_.remote_endpoint().address().to_string(),
+            socket_.remote_endpoint().port());
     do_read();
 }
 
@@ -29,11 +29,10 @@ void Session::do_read()
             if (ec)
             {
                 if (ec != asio::error::eof)
-                    std::cerr << "[Session] Read error: " << ec.message() << std::endl;
+                    LOG_ERROR("[Session] Read error: {}", ec.message());
                 return;
             }
 
-            // Feed data to the parser
             std::size_t consumed = parser_.feed(read_buf_.data(), length);
 
             if (parser_.has_error())
@@ -44,16 +43,13 @@ void Session::do_read()
 
             if (parser_.completed())
             {
-                // Route and respond
                 const auto &req = parser_.request();
-                std::cout << "[Session] " << static_cast<int>(req.method)
-                          << " " << req.uri << std::endl;
+                LOG_DEBUG("[Session] {} {}", static_cast<int>(req.method), req.uri);
                 Response resp = router_.dispatch(req);
                 do_write(std::move(resp));
             }
             else
             {
-                // Need more data
                 do_read();
             }
         });
@@ -71,7 +67,7 @@ void Session::do_write(Response response)
         {
             if (ec)
             {
-                std::cerr << "[Session] Write error: " << ec.message() << std::endl;
+                LOG_ERROR("[Session] Write error: {}", ec.message());
                 return;
             }
 

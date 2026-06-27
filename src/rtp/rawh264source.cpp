@@ -1,4 +1,5 @@
 #include "rtp/rawh264source.h"
+#include "log/logger.h"
 #include <cstring>
 #include <iostream>
 
@@ -11,13 +12,13 @@ bool RawH264NALSource::Open(const std::string& source) {
     filepath_ = source;
     file_data_ = ReadFile(source);
     if (file_data_.empty()) {
-        std::cerr << "[RawH264] Failed to read file: " << source << std::endl;
+        LOG_ERROR("[RawH264] Failed to read file: {}", source);
         return false;
     }
 
     cached_nals_ = ExtractNALUnits(file_data_);
     if (cached_nals_.empty()) {
-        std::cerr << "[RawH264] No NAL units found in file" << std::endl;
+        LOG_ERROR("[RawH264] No NAL units found in file");
         return false;
     }
 
@@ -27,18 +28,17 @@ bool RawH264NALSource::Open(const std::string& source) {
     eof_reached_ = false;
 
     for (auto& nal : cached_nals_) {
-        if (nal.nal_type == 7) sps_ = nal.data; // SPS
-        if (nal.nal_type == 8) pps_ = nal.data; // PPS
+        if (nal.nal_type == 7) sps_ = nal.data;
+        if (nal.nal_type == 8) pps_ = nal.data;
     }
 
     width_ = 1920;
     height_ = 1080;
 
-    std::cout << "[RawH264] Loaded " << cached_nals_.size()
-              << " NAL units from " << source
-              << " (SPS=" << (sps_.empty() ? 0 : sps_.size())
-              << ", PPS=" << (pps_.empty() ? 0 : pps_.size()) << ")"
-              << std::endl;
+    LOG_INFO("[RawH264] Loaded {} NAL units from {} (SPS={}, PPS={})",
+             cached_nals_.size(), source,
+             sps_.empty() ? 0 : sps_.size(),
+             pps_.empty() ? 0 : pps_.size());
     return true;
 }
 

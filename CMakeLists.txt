@@ -7,8 +7,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
-    # 将调试信息嵌入 .obj 文件（/Z7），避免并行编译时 PDB 文件锁冲突（C1041）
-    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+    # 强制替换 /Zi /ZI 为 /Z7，将调试信息嵌入 .obj 文件，避免 PDB 文件锁冲突（C1041）
+    string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REPLACE "/ZI" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}" CACHE STRING "Debug flags" FORCE)
 endif()
 
 # ============================================================
@@ -20,6 +22,11 @@ option(BUILD_TESTS "Build test programs" OFF)
 # ASIO (header-only)
 # ============================================================
 set(ASIO_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/asio-1.36.0)
+
+# ============================================================
+# spdlog (header-only)
+# ============================================================
+set(SPDLOG_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/spdlog-1.17.0/include)
 
 # Define ASIO standalone (without Boost)
 add_definitions(-DASIO_STANDALONE)
@@ -38,6 +45,7 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${ASIO_INCLUDE_DIR}
+    ${SPDLOG_INCLUDE_DIR}
 )
 
 # Link pthreads (required by ASIO on Linux)
@@ -70,6 +78,7 @@ if(BUILD_TESTS)
         target_include_directories(${PROJECT_NAME}_tests PRIVATE
             ${CMAKE_SOURCE_DIR}/include
             ${ASIO_INCLUDE_DIR}
+            ${SPDLOG_INCLUDE_DIR}
         )
 
         target_link_libraries(${PROJECT_NAME}_tests PRIVATE Threads::Threads)

@@ -1,17 +1,78 @@
 #include "server/http/server.hpp"
 #include "rtsp/rtspmgr.h"
+#include "log/logger.h"
 
 #include <csignal>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <filesystem>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static std::unique_ptr<http::Server> g_http_server;
 static std::string g_video_file;
 
+static std::string get_exe_dir()
+{
+#ifdef _WIN32
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::filesystem::path p(path);
+    return p.parent_path().string();
+#else
+    return std::filesystem::current_path().string();
+#endif
+}
+
+static std::string resolve_video_path(const std::string& filename)
+{
+    if (std::filesystem::exists(filename)) {
+        LOG_INFO("[Main] Found video at cwd: {}", std::filesystem::absolute(filename).string());
+        return filename;
+    }
+
+    std::string exe_dir = get_exe_dir();
+    std::string exe_path = exe_dir + "\\" + filename;
+    if (std::filesystem::exists(exe_path)) {
+        LOG_INFO("[Main] Found video at exe dir: {}", exe_path);
+        return exe_path;
+    }
+
+    std::string parent1 = std::filesystem::path(exe_dir).parent_path().string() + "\\" + filename;
+    if (std::filesystem::exists(parent1)) {
+        LOG_INFO("[Main] Found video at parent1: {}", parent1);
+        return parent1;
+    }
+
+    std::string parent2 = std::filesystem::path(exe_dir).parent_path().parent_path().string() + "\\" + filename;
+    if (std::filesystem::exists(parent2)) {
+        LOG_INFO("[Main] Found video at parent2: {}", parent2);
+        return parent2;
+    }
+
+    std::string parent3 = std::filesystem::path(exe_dir).parent_path().parent_path().parent_path().string() + "\\" + filename;
+    if (std::filesystem::exists(parent3)) {
+        LOG_INFO("[Main] Found video at parent3: {}", parent3);
+        return parent3;
+    }
+
+    LOG_WARN("[Main] Video not found. Searched:\n"
+             "  1. cwd: {}\n"
+             "  2. exe: {}\n"
+             "  3. p1:  {}\n"
+             "  4. p2:  {}\n"
+             "  5. p3:  {}",
+             std::filesystem::absolute(filename).string(),
+             exe_path, parent1, parent2, parent3);
+
+    return filename;
+}
+
 static void signal_handler(int /*signum*/)
 {
-    std::cout << "\n[Main] Caught signal, shutting down..." << std::endl;
+    LOG_INFO("[Main] Caught signal, shutting down...");
     if (g_http_server)
         g_http_server->stop();
     rtsp::RtspManager::Instance().Stop();
@@ -40,27 +101,22 @@ int main(int argc, char* argv[])
     if (g_video_file.empty()) {
         g_video_file = "test.h264";
     }
-    // ------------------------------------------------------------
-    // 1. Start RTSP server on port 8554
-    // ------------------------------------------------------------
-    std::cout << "[Main] Starting RTSP server on rtsp://localhost:8554" << std::endl;
+
+    ai_camera::log::Init("ai-camera", "");
+
+    LOG_INFO("[Main] Starting RTSP server on rtsp://localhost:8554");
     auto& rtsp_mgr = rtsp::RtspManager::Instance();
 
     if (!g_video_file.empty()) {
+        g_video_file = resolve_video_path(g_video_file);
         rtsp_mgr.SetVideoFile(g_video_file);
-        std::cout << "[Main] Video file: " << g_video_file << std::endl;
+        LOG_INFO("[Main] Video file: {}", g_video_file);
     }
 
     rtsp_mgr.Start(8554);
 
-    // ------------------------------------------------------------
-    // 2. Create HTTP server on port 8080
-    // ------------------------------------------------------------
     g_http_server = std::make_unique<http::Server>("0.0.0.0", 8080);
 
-    // ------------------------------------------------------------
-    // 3. Register routes
-    // ------------------------------------------------------------
     auto &router = g_http_server->router();
 
     router.get("/",
@@ -97,18 +153,13 @@ int main(int argc, char* argv[])
             return http::Response::ok(req.body);
         });
 
-    // ------------------------------------------------------------
-    // 4. Register signal handlers for graceful shutdown
-    // ------------------------------------------------------------
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    // ------------------------------------------------------------
-    // 5. Start the HTTP server (blocks)
-    // ------------------------------------------------------------
-    std::cout << "[Main] Starting HTTP server on http://localhost:8080" << std::endl;
+    LOG_INFO("[Main] Starting HTTP server on http://localhost:8080");
     g_http_server->run();
 
-    std::cout << "[Main] Server stopped. Goodbye!" << std::endl;
+    LOG_INFO("[Main] Server stopped. Goodbye!");
+    ai_camera::log::Shutdown();
     return 0;
 }
