@@ -1,5 +1,7 @@
 #include "rtp/mediasession.h"
 #include "rtp/rtptransport.h"
+#include <cstdio>
+#include <cstring>
 namespace rtp {
 
 static const int DEFAULT_MULTICAST_PORT = 5000;
@@ -203,8 +205,9 @@ std::string AsioMediaSession::GenerateSdpMessage(const std::string& ip, const st
     char buf[2048] = {0};
     snprintf(buf, sizeof(buf), 
             "v=0\r\n"
-            "o=- %s 1 IN IP4 %s\r\n"            
-            "t=0 0\r\n",
+            "o=- %s 1 IN IP4 %s\r\n"
+            "s=RTSP Session\r\n"
+            "t=0 0\r\n"
             "a=control:*\r\n",
             session_id.c_str(),
             ip.c_str()
@@ -279,8 +282,7 @@ void AsioMediaSession::DispatchToClients(MediaChannelId channel_id, RtpPacket pa
     std::lock_guard<std::mutex> lock(client_mutex_);
 
     // 为每个客户端复制一份RTP包
-    // native_handle - RtpPacket
-    std::map<int, RtpPacket> client_packets;
+    std::map<asio::ip::tcp::socket::native_handle_type, RtpPacket> client_packets;
 
     for (auto& [native_handle, client_info] : clients_) {
         if (!client_info.is_active) {
@@ -304,7 +306,7 @@ void AsioMediaSession::DispatchToClients(MediaChannelId channel_id, RtpPacket pa
         }
 
         // 异步发送RTP包到客户端                
-        if (native_handle >= 0) {
+        {
             auto iter = client_packets.find(native_handle);
             if (iter != client_packets.end()) {
                 // 线程池中异步发送RTP包

@@ -1,4 +1,4 @@
-#include "ws/sha1.h"
+#include "server/ws/sha1.h"
 
 #include <cstring>
 

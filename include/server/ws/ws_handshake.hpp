@@ -1,7 +1,7 @@
 #ifndef SERVER_WS_WS_HANDSHAKE_HPP
 #define SERVER_WS_WS_HANDSHAKE_HPP
 
-#include "ws/sha1.h"
+#include "server/ws/sha1.h"
 
 #include <cctype>
 #include <cstring>

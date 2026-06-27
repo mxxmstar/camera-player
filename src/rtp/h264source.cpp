@@ -1,5 +1,6 @@
 #include "rtp/h264source.h"
 #include <chrono>
+#include <cstring>
 namespace rtp {
 H264Source::H264Source(uint32_t frame_rate) : frame_rate_(frame_rate) {
     media_type_ = H264;

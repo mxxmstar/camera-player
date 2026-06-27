@@ -10,6 +10,8 @@
 #include <sstream>
 #include <chrono>
 #include <random>
+#include <cstdlib>
+#include <cstring>
 
 namespace rtsp {
 

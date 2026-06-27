@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    # 将调试信息嵌入 .obj 文件（/Z7），避免并行编译时 PDB 文件锁冲突（C1041）
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+endif()
+
 # ============================================================
 # Build options
 # ============================================================
@@ -31,7 +37,6 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/include/ai-camera
     ${ASIO_INCLUDE_DIR}
 )
 
@@ -64,7 +69,6 @@ if(BUILD_TESTS)
 
         target_include_directories(${PROJECT_NAME}_tests PRIVATE
             ${CMAKE_SOURCE_DIR}/include
-            ${CMAKE_SOURCE_DIR}/include/ai-camera
             ${ASIO_INCLUDE_DIR}
         )
 
