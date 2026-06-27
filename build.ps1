@@ -26,5 +26,5 @@ Write-Output "=== Building ==="
 if ($LASTEXITCODE -ne 0) { Write-Output "BUILD FAILED"; exit 1 }
 
 Write-Output "=== SUCCESS ==="
-Write-Output "Binary: build\Debug\ai-camera.exe"
-Write-Output "Run:    build\Debug\ai-camera.exe"
+Write-Output "Binary: build\Debug\camera-player.exe"
+Write-Output "Run:    build\Debug\camera-player.exe"

@@ -102,7 +102,7 @@ int main(int argc, char* argv[])
         g_video_file = "test.h264";
     }
 
-    ai_camera::log::Init("ai-camera", "");
+    ai_camera::log::Init("camera-player", "");
 
     LOG_INFO("[Main] Starting RTSP server on rtsp://localhost:8554");
     auto& rtsp_mgr = rtsp::RtspManager::Instance();
@@ -124,9 +124,9 @@ int main(int argc, char* argv[])
         {
             return http::Response::ok(
                 "<html>"
-                "<head><title>ai-camera</title></head>"
+                "<head><title>camera-player</title></head>"
                 "<body>"
-                "<h1>Welcome to ai-camera!</h1>"
+                "<h1>Welcome to camera-player!</h1>"
                 "<p>RTSP stream available at: <b>rtsp://localhost:8554/live</b></p>"
                 "</body>"
                 "</html>",
@@ -143,7 +143,7 @@ int main(int argc, char* argv[])
         [](const http::Request & /*req*/) -> http::Response
         {
             return http::Response::ok(
-                "{ \"message\": \"Hello from ai-camera\", \"status\": \"ok\" }\n",
+                "{ \"message\": \"Hello from camera-player\", \"status\": \"ok\" }\n",
                 "application/json");
         });
 

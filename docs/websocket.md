@@ -19,7 +19,7 @@
 ## 1. 目录结构
 
 ```
-ai-camera/
+camera-player/
 ├── include/
 │   ├── ws/
 │   │   └── sha1.h                      # SHA-1 + Base64 密码学原语（握手用）

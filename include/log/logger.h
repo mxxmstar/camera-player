@@ -24,7 +24,7 @@
  *   - critical: 红色背景
  * 
  * 用法：
- *   - 初始化：Logger::Init("ai-camera", "logs/ai-camera.log");
+ *   - 初始化：Logger::Init("camera-player", "logs/camera-player.log");
  *   - 记录日志：LOG_INFO("Hello, {}", "world");
  *   - 关闭：Logger::Shutdown();
  */
@@ -60,7 +60,7 @@ enum class Level {
  * @brief 初始化日志模块
  * 
  * @param logger_name   日志器名称
- * @param log_file_path 日志文件路径（如 "logs/ai-camera.log"），传空则仅控制台输出
+ * @param log_file_path 日志文件路径（如 "logs/camera-player.log"），传空则仅控制台输出
  * @param async_mode    是否启用异步模式（默认 false，同步模式）
  * @param max_file_size 单文件最大大小（字节，默认 5MB）
  * @param max_files     最大轮转文件数（默认 3）
@@ -70,13 +70,13 @@ enum class Level {
  * 
  * 示例：
  *   // 同步模式，输出到控制台 + 文件
- *   Logger::Init("ai-camera", "logs/ai-camera.log");
+ *   Logger::Init("camera-player", "logs/camera-player.log");
  *   
  *   // 异步模式，输出到控制台 + 文件
- *   Logger::Init("ai-camera", "logs/ai-camera.log", true);
+ *   Logger::Init("camera-player", "logs/camera-player.log", true);
  *   
  *   // 仅控制台输出
- *   Logger::Init("ai-camera", "");
+ *   Logger::Init("camera-player", "");
  */
 inline void Init(const std::string& logger_name,
                  const std::string& log_file_path = "",
