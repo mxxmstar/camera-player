@@ -2,6 +2,15 @@
 #include "rtsp/rtspmgr.h"
 #include "log/logger.h"
 
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+}
+
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -87,79 +96,182 @@ static void print_usage(const char* prog)
               << std::endl;
 }
 
-int main(int argc, char* argv[])
+static int run_opengl_test()
 {
-    for (int i = 1; i < argc; ++i) {
-        std::string arg(argv[i]);
-        if (arg == "--video" && i + 1 < argc) {
-            g_video_file = argv[++i];
-        } else if (arg == "--help") {
-            print_usage(argv[0]);
-            return 0;
+    if (!glfwInit()) {
+        std::cerr << "Failed to initialize GLFW" << std::endl;
+        return -1;
+    }
+
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    GLFWwindow* window = glfwCreateWindow(800, 600, "OpenGL Test", nullptr, nullptr);
+    if (!window) {
+        std::cerr << "Failed to create GLFW window" << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+
+    glfwMakeContextCurrent(window);
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD" << std::endl;
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return -1;
+    }
+
+    std::cout << "OpenGL Vendor:   " << glGetString(GL_VENDOR) << std::endl;
+    std::cout << "OpenGL Renderer: " << glGetString(GL_RENDERER) << std::endl;
+    std::cout << "OpenGL Version:  " << glGetString(GL_VERSION) << std::endl;
+
+    while (!glfwWindowShouldClose(window)) {
+        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return 0;
+}
+
+static int run_ffmpeg_test()
+{
+    std::cout << "\n========== FFmpeg Test ==========" << std::endl;
+    std::cout << "FFmpeg version: " << av_version_info() << std::endl;
+
+    std::cout << "\n----- Video Codecs -----" << std::endl;
+    const AVCodec* codec = nullptr;
+    void* iter = nullptr;
+    int video_count = 0;
+    while ((codec = av_codec_iterate(&iter)) != nullptr) {
+        if (av_codec_is_decoder(codec) && codec->type == AVMEDIA_TYPE_VIDEO) {
+            std::cout << "  [V] " << codec->name;
+            if (codec->long_name)
+                std::cout << " - " << codec->long_name;
+            std::cout << std::endl;
+            if (++video_count >= 20)
+                break;
         }
     }
-    if (g_video_file.empty()) {
-        g_video_file = "test.h264";
+    if (video_count >= 20)
+        std::cout << "  ... (and more)" << std::endl;
+
+    std::cout << "\n----- Audio Codecs -----" << std::endl;
+    iter = nullptr;
+    int audio_count = 0;
+    while ((codec = av_codec_iterate(&iter)) != nullptr) {
+        if (av_codec_is_decoder(codec) && codec->type == AVMEDIA_TYPE_AUDIO) {
+            std::cout << "  [A] " << codec->name;
+            if (codec->long_name)
+                std::cout << " - " << codec->long_name;
+            std::cout << std::endl;
+            if (++audio_count >= 20)
+                break;
+        }
     }
+    if (audio_count >= 20)
+        std::cout << "  ... (and more)" << std::endl;
 
-    ai_camera::log::Init("camera-player", "");
-
-    LOG_INFO("[Main] Starting RTSP server on rtsp://localhost:8554");
-    auto& rtsp_mgr = rtsp::RtspManager::Instance();
-
-    if (!g_video_file.empty()) {
-        g_video_file = resolve_video_path(g_video_file);
-        rtsp_mgr.SetVideoFile(g_video_file);
-        LOG_INFO("[Main] Video file: {}", g_video_file);
+    std::cout << "\n----- Video Formats (Containers) -----" << std::endl;
+    const AVInputFormat* ifmt = nullptr;
+    void* fmt_iter = nullptr;
+    int fmt_count = 0;
+    while ((ifmt = av_demuxer_iterate(&fmt_iter)) != nullptr) {
+        std::cout << "  [F] " << ifmt->name;
+        if (ifmt->long_name)
+            std::cout << " - " << ifmt->long_name;
+        std::cout << std::endl;
+        if (++fmt_count >= 20)
+            break;
     }
+    if (fmt_count >= 20)
+        std::cout << "  ... (and more)" << std::endl;
 
-    rtsp_mgr.Start(8554);
-
-    g_http_server = std::make_unique<http::Server>("0.0.0.0", 8080);
-
-    auto &router = g_http_server->router();
-
-    router.get("/",
-        [](const http::Request & /*req*/) -> http::Response
-        {
-            return http::Response::ok(
-                "<html>"
-                "<head><title>camera-player</title></head>"
-                "<body>"
-                "<h1>Welcome to camera-player!</h1>"
-                "<p>RTSP stream available at: <b>rtsp://localhost:8554/live</b></p>"
-                "</body>"
-                "</html>",
-                "text/html");
-        });
-
-    router.get("/hello",
-        [](const http::Request & /*req*/) -> http::Response
-        {
-            return http::Response::ok("Hello, ASIO HTTP Server!\n");
-        });
-
-    router.get("/json",
-        [](const http::Request & /*req*/) -> http::Response
-        {
-            return http::Response::ok(
-                "{ \"message\": \"Hello from camera-player\", \"status\": \"ok\" }\n",
-                "application/json");
-        });
-
-    router.post("/echo",
-        [](const http::Request &req) -> http::Response
-        {
-            return http::Response::ok(req.body);
-        });
-
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
-
-    LOG_INFO("[Main] Starting HTTP server on http://localhost:8080");
-    g_http_server->run();
-
-    LOG_INFO("[Main] Server stopped. Goodbye!");
-    ai_camera::log::Shutdown();
+    std::cout << "\n========== FFmpeg Test End ==========\n" << std::endl;
     return 0;
+}
+
+int main(int argc, char* argv[])
+{
+    // for (int i = 1; i < argc; ++i) {
+    //     std::string arg(argv[i]);
+    //     if (arg == "--video" && i + 1 < argc) {
+    //         g_video_file = argv[++i];
+    //     } else if (arg == "--help") {
+    //         print_usage(argv[0]);
+    //         return 0;
+    //     }
+    // }
+    // if (g_video_file.empty()) {
+    //     g_video_file = "test.h264";
+    // }
+
+    // ai_camera::log::Init("camera-player", "");
+
+    // LOG_INFO("[Main] Starting RTSP server on rtsp://localhost:8554");
+    // auto& rtsp_mgr = rtsp::RtspManager::Instance();
+
+    // if (!g_video_file.empty()) {
+    //     g_video_file = resolve_video_path(g_video_file);
+    //     rtsp_mgr.SetVideoFile(g_video_file);
+    //     LOG_INFO("[Main] Video file: {}", g_video_file);
+    // }
+
+    // rtsp_mgr.Start(8554);
+
+    // g_http_server = std::make_unique<http::Server>("0.0.0.0", 8080);
+
+    // auto &router = g_http_server->router();
+
+    // router.get("/",
+    //     [](const http::Request & /*req*/) -> http::Response
+    //     {
+    //         return http::Response::ok(
+    //             "<html>"
+    //             "<head><title>camera-player</title></head>"
+    //             "<body>"
+    //             "<h1>Welcome to camera-player!</h1>"
+    //             "<p>RTSP stream available at: <b>rtsp://localhost:8554/live</b></p>"
+    //             "</body>"
+    //             "</html>",
+    //             "text/html");
+    //     });
+
+    // router.get("/hello",
+    //     [](const http::Request & /*req*/) -> http::Response
+    //     {
+    //         return http::Response::ok("Hello, ASIO HTTP Server!\n");
+    //     });
+
+    // router.get("/json",
+    //     [](const http::Request & /*req*/) -> http::Response
+    //     {
+    //         return http::Response::ok(
+    //             "{ \"message\": \"Hello from camera-player\", \"status\": \"ok\" }\n",
+    //             "application/json");
+    //     });
+
+    // router.post("/echo",
+    //     [](const http::Request &req) -> http::Response
+    //     {
+    //         return http::Response::ok(req.body);
+    //     });
+
+    // std::signal(SIGINT, signal_handler);
+    // std::signal(SIGTERM, signal_handler);
+
+    // LOG_INFO("[Main] Starting HTTP server on http://localhost:8080");
+    // g_http_server->run();
+
+    // LOG_INFO("[Main] Server stopped. Goodbye!");
+    // ai_camera::log::Shutdown();
+
+    run_ffmpeg_test();
+    return run_opengl_test();
 }
