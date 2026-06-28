@@ -11,6 +11,12 @@ extern "C" {
 #include <libavutil/avutil.h>
 }
 
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QWidget>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QVBoxLayout>
+#include <QtWidgets/QLabel>
+
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -26,85 +32,68 @@ static std::string g_video_file;
 static std::string get_exe_dir()
 {
 #ifdef _WIN32
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::filesystem::path p(path);
-    return p.parent_path().string();
+    char path[MAX_PATH];
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::filesystem::path exe_path(path);
+    return exe_path.parent_path().string();
 #else
-    return std::filesystem::current_path().string();
+    char path[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (len != -1) {
+        path[len] = '\0';
+        std::filesystem::path exe_path(path);
+        return exe_path.parent_path().string();
+    }
+    return "";
 #endif
 }
 
 static std::string resolve_video_path(const std::string& filename)
 {
-    if (std::filesystem::exists(filename)) {
-        LOG_INFO("[Main] Found video at cwd: {}", std::filesystem::absolute(filename).string());
+    std::filesystem::path p(filename);
+    if (p.is_absolute()) {
         return filename;
     }
-
     std::string exe_dir = get_exe_dir();
-    std::string exe_path = exe_dir + "\\" + filename;
-    if (std::filesystem::exists(exe_path)) {
-        LOG_INFO("[Main] Found video at exe dir: {}", exe_path);
-        return exe_path;
+    if (!exe_dir.empty()) {
+        std::filesystem::path candidate = std::filesystem::path(exe_dir) / filename;
+        if (std::filesystem::exists(candidate)) {
+            return candidate.string();
+        }
     }
-
-    std::string parent1 = std::filesystem::path(exe_dir).parent_path().string() + "\\" + filename;
-    if (std::filesystem::exists(parent1)) {
-        LOG_INFO("[Main] Found video at parent1: {}", parent1);
-        return parent1;
+    if (std::filesystem::exists(p)) {
+        return std::filesystem::absolute(p).string();
     }
-
-    std::string parent2 = std::filesystem::path(exe_dir).parent_path().parent_path().string() + "\\" + filename;
-    if (std::filesystem::exists(parent2)) {
-        LOG_INFO("[Main] Found video at parent2: {}", parent2);
-        return parent2;
-    }
-
-    std::string parent3 = std::filesystem::path(exe_dir).parent_path().parent_path().parent_path().string() + "\\" + filename;
-    if (std::filesystem::exists(parent3)) {
-        LOG_INFO("[Main] Found video at parent3: {}", parent3);
-        return parent3;
-    }
-
-    LOG_WARN("[Main] Video not found. Searched:\n"
-             "  1. cwd: {}\n"
-             "  2. exe: {}\n"
-             "  3. p1:  {}\n"
-             "  4. p2:  {}\n"
-             "  5. p3:  {}",
-             std::filesystem::absolute(filename).string(),
-             exe_path, parent1, parent2, parent3);
-
     return filename;
-}
-
-static void signal_handler(int /*signum*/)
-{
-    LOG_INFO("[Main] Caught signal, shutting down...");
-    if (g_http_server)
-        g_http_server->stop();
-    rtsp::RtspManager::Instance().Stop();
 }
 
 static void print_usage(const char* prog)
 {
     std::cout << "Usage: " << prog << " [options]\n"
               << "Options:\n"
-              << "  --video <file>   Raw H.264 video file to stream via RTSP\n"
-              << "  --help           Show this help\n"
-              << std::endl;
+              << "  --video <file>   Set video file path (default: test.h264)\n"
+              << "  --help           Show this help message\n";
+}
+
+static void signal_handler(int sig)
+{
+    (void)sig;
+    if (g_http_server) {
+        g_http_server->stop();
+    }
 }
 
 static int run_opengl_test()
 {
+    std::cout << "========== OpenGL Test ==========" << std::endl;
+
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
         return -1;
     }
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     GLFWwindow* window = glfwCreateWindow(800, 600, "OpenGL Test", nullptr, nullptr);
@@ -137,6 +126,8 @@ static int run_opengl_test()
 
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    std::cout << "========== OpenGL Test End ==========" << std::endl;
     return 0;
 }
 
@@ -159,8 +150,6 @@ static int run_ffmpeg_test()
                 break;
         }
     }
-    if (video_count >= 20)
-        std::cout << "  ... (and more)" << std::endl;
 
     std::cout << "\n----- Audio Codecs -----" << std::endl;
     iter = nullptr;
@@ -175,17 +164,15 @@ static int run_ffmpeg_test()
                 break;
         }
     }
-    if (audio_count >= 20)
-        std::cout << "  ... (and more)" << std::endl;
 
     std::cout << "\n----- Video Formats (Containers) -----" << std::endl;
-    const AVInputFormat* ifmt = nullptr;
+    const AVInputFormat* fmt = nullptr;
     void* fmt_iter = nullptr;
     int fmt_count = 0;
-    while ((ifmt = av_demuxer_iterate(&fmt_iter)) != nullptr) {
-        std::cout << "  [F] " << ifmt->name;
-        if (ifmt->long_name)
-            std::cout << " - " << ifmt->long_name;
+    while ((fmt = av_demuxer_iterate(&fmt_iter)) != nullptr) {
+        std::cout << "  [F] " << fmt->name;
+        if (fmt->long_name)
+            std::cout << " - " << fmt->long_name;
         std::cout << std::endl;
         if (++fmt_count >= 20)
             break;
@@ -197,81 +184,71 @@ static int run_ffmpeg_test()
     return 0;
 }
 
+class CounterWidget : public QWidget
+{
+    Q_OBJECT
+public:
+    CounterWidget(QWidget* parent = nullptr) : QWidget(parent), m_count(0)
+    {
+        auto* layout = new QVBoxLayout(this);
+
+        m_label = new QLabel("Count: 0", this);
+        m_label->setAlignment(Qt::AlignCenter);
+        QFont font = m_label->font();
+        font.setPointSize(24);
+        m_label->setFont(font);
+
+        m_button = new QPushButton("Click Me!", this);
+        m_button->setMinimumHeight(50);
+
+        connect(m_button, &QPushButton::clicked, this, &CounterWidget::onClick);
+
+        layout->addWidget(m_label);
+        layout->addWidget(m_button);
+        setLayout(layout);
+
+        setWindowTitle("Qt6 Counter Test");
+        resize(300, 150);
+    }
+
+private slots:
+    void onClick()
+    {
+        ++m_count;
+        m_label->setText(QString("Count: %1").arg(m_count));
+    }
+
+private:
+    QLabel* m_label;
+    QPushButton* m_button;
+    int m_count;
+};
+
+static int run_qt_test(int argc, char* argv[])
+{
+    std::cout << "\n========== Qt6 Widgets Test ==========" << std::endl;
+
+    QApplication app(argc, argv);
+
+    std::cout << "Qt Compile Version: " << QT_VERSION_STR << std::endl;
+    std::cout << "Qt Runtime Version: " << qVersion() << std::endl;
+
+    CounterWidget widget;
+    widget.show();
+
+    std::cout << "Qt Widgets window shown. Close window to continue..." << std::endl;
+    int ret = app.exec();
+
+    std::cout << "========== Qt6 Widgets Test End ==========\n" << std::endl;
+    return ret;
+}
+
 int main(int argc, char* argv[])
 {
-    // for (int i = 1; i < argc; ++i) {
-    //     std::string arg(argv[i]);
-    //     if (arg == "--video" && i + 1 < argc) {
-    //         g_video_file = argv[++i];
-    //     } else if (arg == "--help") {
-    //         print_usage(argv[0]);
-    //         return 0;
-    //     }
-    // }
-    // if (g_video_file.empty()) {
-    //     g_video_file = "test.h264";
-    // }
-
-    // ai_camera::log::Init("camera-player", "");
-
-    // LOG_INFO("[Main] Starting RTSP server on rtsp://localhost:8554");
-    // auto& rtsp_mgr = rtsp::RtspManager::Instance();
-
-    // if (!g_video_file.empty()) {
-    //     g_video_file = resolve_video_path(g_video_file);
-    //     rtsp_mgr.SetVideoFile(g_video_file);
-    //     LOG_INFO("[Main] Video file: {}", g_video_file);
-    // }
-
-    // rtsp_mgr.Start(8554);
-
-    // g_http_server = std::make_unique<http::Server>("0.0.0.0", 8080);
-
-    // auto &router = g_http_server->router();
-
-    // router.get("/",
-    //     [](const http::Request & /*req*/) -> http::Response
-    //     {
-    //         return http::Response::ok(
-    //             "<html>"
-    //             "<head><title>camera-player</title></head>"
-    //             "<body>"
-    //             "<h1>Welcome to camera-player!</h1>"
-    //             "<p>RTSP stream available at: <b>rtsp://localhost:8554/live</b></p>"
-    //             "</body>"
-    //             "</html>",
-    //             "text/html");
-    //     });
-
-    // router.get("/hello",
-    //     [](const http::Request & /*req*/) -> http::Response
-    //     {
-    //         return http::Response::ok("Hello, ASIO HTTP Server!\n");
-    //     });
-
-    // router.get("/json",
-    //     [](const http::Request & /*req*/) -> http::Response
-    //     {
-    //         return http::Response::ok(
-    //             "{ \"message\": \"Hello from camera-player\", \"status\": \"ok\" }\n",
-    //             "application/json");
-    //     });
-
-    // router.post("/echo",
-    //     [](const http::Request &req) -> http::Response
-    //     {
-    //         return http::Response::ok(req.body);
-    //     });
-
-    // std::signal(SIGINT, signal_handler);
-    // std::signal(SIGTERM, signal_handler);
-
-    // LOG_INFO("[Main] Starting HTTP server on http://localhost:8080");
-    // g_http_server->run();
-
-    // LOG_INFO("[Main] Server stopped. Goodbye!");
-    // ai_camera::log::Shutdown();
-
     run_ffmpeg_test();
-    return run_opengl_test();
+    run_qt_test(argc, argv);
+    // return run_opengl_test();
+    return 0;
 }
+
+#include "main.moc"
