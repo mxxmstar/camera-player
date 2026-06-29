@@ -20,6 +20,7 @@ endif()
 # Build options
 # ============================================================
 option(BUILD_TESTS "Build test programs" OFF)
+option(ENABLE_PCAP "Enable pcap network capture support (PcapPuller)" ON)
 
 # ============================================================
 # ASIO (header-only)
@@ -46,6 +47,26 @@ endif()
 # ============================================================
 set(GLAD_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/glad/include)
 set(GLAD_SOURCE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
+
+# ============================================================
+# libpcap / Npcap (prebuilt static import libraries)
+# 仅当 ENABLE_PCAP=ON 时启用，提供 PcapPuller 的网卡抓包能力
+# ============================================================
+if(ENABLE_PCAP)
+    set(PCAP_ROOT ${CMAKE_SOURCE_DIR}/third_party/pcap)
+    set(PCAP_INCLUDE_DIR ${PCAP_ROOT}/Include)
+    if(MSVC)
+        set(PCAP_LIBRARIES
+            ${PCAP_ROOT}/Packet.lib
+            ${PCAP_ROOT}/wpcap.lib
+        )
+    else()
+        set(PCAP_LIBRARIES
+            ${PCAP_ROOT}/wpcap.lib
+            ${PCAP_ROOT}/Packet.lib
+        )
+    endif()
+endif()
 
 # ============================================================
 # FFmpeg (prebuilt shared libraries)
@@ -127,6 +148,11 @@ set(RESOURCE_FILES
 
 list(APPEND SOURCES ${GLAD_SOURCE})
 
+# 当 ENABLE_PCAP=OFF 时，从源文件列表中排除 PcapPuller 实现
+if(NOT ENABLE_PCAP)
+    list(FILTER SOURCES EXCLUDE REGEX ".*/pcap_puller\\.cpp$")
+endif()
+
 add_executable(${PROJECT_NAME} ${SOURCES} ${RESOURCE_FILES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -140,6 +166,12 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${QT6_INCLUDE_DIR}
 )
 
+# pcap 头文件路径与编译宏
+if(ENABLE_PCAP)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${PCAP_INCLUDE_DIR})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_PCAP=1)
+endif()
+
 # Link pthreads (required by ASIO on Linux)
 find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
@@ -150,6 +182,11 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE opengl32 ${GLFW3_LIBRARY})
     target_link_libraries(${PROJECT_NAME} PRIVATE ${FFMPEG_LIBRARIES})
     target_link_libraries(${PROJECT_NAME} PRIVATE ${QT6_LIBRARIES})
+
+    # pcap 链接库（仅 ENABLE_PCAP=ON 时）
+    if(ENABLE_PCAP)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${PCAP_LIBRARIES})
+    endif()
 
     # 可选链接 bcmtool（仅在 third_party/bcmtool 存在时）
     if(BCMTOOL_ENABLED)
@@ -182,6 +219,14 @@ if(WIN32)
         ${QT6_ROOT}/bin/Qt6OpenGLd.dll
     )
 
+    # Npcap 运行期 DLL（随程序分发，避免要求用户安装 Npcap）
+    if(ENABLE_PCAP)
+        set(PCAP_DLLS
+            ${PCAP_ROOT}/wpcap.dll
+            ${PCAP_ROOT}/packet.dll
+        )
+    endif()
+
     foreach(dll ${FFMPEG_DLLS})
         if(EXISTS ${dll})
             add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
@@ -193,6 +238,16 @@ if(WIN32)
     endforeach()
 
     foreach(dll ${QT6_DLLS})
+        if(EXISTS ${dll})
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${dll}
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>
+            )
+        endif()
+    endforeach()
+
+    foreach(dll ${PCAP_DLLS})
         if(EXISTS ${dll})
             add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
