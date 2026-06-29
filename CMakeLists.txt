@@ -86,6 +86,17 @@ set(Qt6OpenGL_DIR ${QT6_ROOT}/lib/cmake/Qt6OpenGL)
 
 find_package(Qt6 COMPONENTS Core Gui Widgets Network OpenGL REQUIRED)
 
+# ============================================================
+# bcmtool (third_party, pure C static library, optional)
+# 仅当 third_party/bcmtool 目录存在时才编译
+# ============================================================
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/bcmtool/CMakeLists.txt")
+    set(BCMTOOL_ENABLED ON)
+    add_subdirectory(third_party/bcmtool)
+else()
+    set(BCMTOOL_ENABLED OFF)
+endif()
+
 set(QT6_LIBRARIES
     Qt6::Core
     Qt6::Gui
@@ -139,6 +150,11 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE opengl32 ${GLFW3_LIBRARY})
     target_link_libraries(${PROJECT_NAME} PRIVATE ${FFMPEG_LIBRARIES})
     target_link_libraries(${PROJECT_NAME} PRIVATE ${QT6_LIBRARIES})
+
+    # 可选链接 bcmtool（仅在 third_party/bcmtool 存在时）
+    if(BCMTOOL_ENABLED)
+        target_link_libraries(${PROJECT_NAME} PRIVATE bcmtool)
+    endif()
 
     # ============================================================
     # Copy DLLs to output directory after build (for VS2022/2026)

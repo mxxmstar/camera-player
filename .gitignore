@@ -53,3 +53,4 @@ third_party/*/build/
 third_party/*/out/
 third_party/qt6/
 build_new/
+QT_StreamPlayer/
