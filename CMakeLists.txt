@@ -271,11 +271,24 @@ endif()
 # Test programs (optional, controlled by BUILD_TESTS)
 # ============================================================
 if(BUILD_TESTS)
+    enable_testing()
+
+    add_executable(${PROJECT_NAME}_rtp_tests
+        tests/rtp_protocol_tests.cpp
+        src/rtp/rtp_packet_parser.cpp
+        src/rtp/h264_rtp_depacketizer.cpp
+    )
+    target_include_directories(${PROJECT_NAME}_rtp_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    add_test(NAME rtp_protocol COMMAND ${PROJECT_NAME}_rtp_tests)
+
     file(GLOB_RECURSE TEST_SOURCES
         tests/*.cpp
         tests/*.hpp
         tests/*.h
     )
+    list(FILTER TEST_SOURCES EXCLUDE REGEX ".*/rtp_protocol_tests\\.cpp$")
 
     if(TEST_SOURCES)
         # 测试程序复用主程序的所有源文件（包括 ws/http/rtsp 等模块实现），

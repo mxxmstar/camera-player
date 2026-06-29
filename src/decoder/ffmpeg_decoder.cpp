@@ -6,6 +6,9 @@
 
 #include "log/logger.h"
 
+#include <cstring>
+#include <limits>
+
 extern "C" {
 #include <libavutil/imgutils.h>
 }
@@ -115,22 +118,49 @@ bool FFmpegDecoder::Decode(std::shared_ptr<MediaPacket> packet) {
         return false;
     }
 
-    // 从 BackendHandle 获取 AVPacket*
+    // Prefer a native AVPacket when one is available. Protocol pullers such
+    // as RtpUdpPuller expose backend-neutral raw bytes and are adapted here.
     AVPacket* avpkt = nullptr;
+    AVPacket* temporary_packet = nullptr;
     if (packet->backend.type == BackendHandle::FFMPEG) {
         avpkt = static_cast<AVPacket*>(packet->backend.ptr);
     } else {
-        LOG_ERROR("non-FFmpeg backend not supported");
-        return false;
+        const std::size_t packet_size = packet->buffer->Size();
+        if (!packet->buffer->Data() || packet_size == 0 ||
+            packet_size >
+                static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            LOG_ERROR("FFmpegDecoder:Decode: invalid raw packet");
+            return false;
+        }
+
+        temporary_packet = av_packet_alloc();
+        if (!temporary_packet ||
+            av_new_packet(
+                temporary_packet, static_cast<int>(packet_size)) < 0) {
+            av_packet_free(&temporary_packet);
+            LOG_ERROR("FFmpegDecoder:Decode: AVPacket allocation failed");
+            return false;
+        }
+        std::memcpy(
+            temporary_packet->data, packet->buffer->Data(), packet_size);
+        temporary_packet->pts = packet->pts;
+        temporary_packet->dts = packet->dts;
+        temporary_packet->duration = packet->duration;
+        if (packet->keyframe) {
+            temporary_packet->flags |= AV_PKT_FLAG_KEY;
+        }
+        avpkt = temporary_packet;
     }
 
     if (!avpkt) {
+        av_packet_free(&temporary_packet);
         LOG_ERROR("backend AVPacket is null");
         return false;
     }
 
     // 送入解码器
     int ret = avcodec_send_packet(codec_ctx_, avpkt);
+    av_packet_free(&temporary_packet);
     if (ret < 0) {
         char buf[AV_ERROR_MAX_STRING_SIZE];
         av_make_error_string(buf, AV_ERROR_MAX_STRING_SIZE, ret);
