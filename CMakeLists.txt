@@ -104,11 +104,19 @@ file(GLOB_RECURSE SOURCES
     src/*.cpp
     src/*.hpp
     src/*.h
+    include/*.h
+    include/*.hpp
+)
+
+# Qt resource file
+set(RESOURCE_FILES
+    resource/resources.qrc
+    resource/style.qss
 )
 
 list(APPEND SOURCES ${GLAD_SOURCE})
 
-add_executable(${PROJECT_NAME} ${SOURCES})
+add_executable(${PROJECT_NAME} ${SOURCES} ${RESOURCE_FILES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include

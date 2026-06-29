@@ -16,6 +16,7 @@ extern "C" {
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QLabel>
+#include "ui/main_window.h"
 
 #include <csignal>
 #include <iostream>
@@ -233,8 +234,8 @@ static int run_qt_test(int argc, char* argv[])
     std::cout << "Qt Compile Version: " << QT_VERSION_STR << std::endl;
     std::cout << "Qt Runtime Version: " << qVersion() << std::endl;
 
-    CounterWidget widget;
-    widget.show();
+    MainWindow mainWindow;
+    mainWindow.show();
 
     std::cout << "Qt Widgets window shown. Close window to continue..." << std::endl;
     int ret = app.exec();
