@@ -112,6 +112,7 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
     ${ASIO_INCLUDE_DIR}
     ${SPDLOG_INCLUDE_DIR}
     ${GLFW3_INCLUDE_DIR}

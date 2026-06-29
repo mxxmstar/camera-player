@@ -1,6 +1,6 @@
 #pragma once
 
-#include "third_party/cameron/readerwriterqueue.h"
+#include "cameron/readerwriterqueue.h"
 
 #include <cstddef>
 #include <utility>
@@ -33,6 +33,11 @@ public:
 
     size_t capacity() const {
         return capacity_;
+    }
+
+    void clear() {
+        T item;
+        while (queue_.try_dequeue(item)) {}
     }
 
 private:

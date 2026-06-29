@@ -1,7 +1,7 @@
 #pragma once
 
-#include "third_party/cameron/concurrentqueue.h"
-#include "third_party/cameron/blockingconcurrentqueue.h"
+#include "cameron/concurrentqueue.h"
+#include "cameron/blockingconcurrentqueue.h"
 
 #include <cstddef>
 
