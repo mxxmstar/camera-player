@@ -57,6 +57,7 @@ private:
     Result HandleFuA(const ParsedRtpPacket& packet);
     Result FinishIfMarked(const ParsedRtpPacket& packet,
                           H264AccessUnit& output);
+    void CacheParameterSetsFromAccessUnit();
 
     std::size_t max_access_unit_size_;
     std::vector<uint8_t> access_unit_;
@@ -66,6 +67,9 @@ private:
     uint32_t current_timestamp_{0};
     bool dropping_timestamp_{false};
     uint32_t dropped_timestamp_{0};
+
+    std::vector<uint8_t> cached_sps_;
+    std::vector<uint8_t> cached_pps_;
 
     bool has_ssrc_{false};
     uint32_t current_ssrc_{0};

@@ -13,6 +13,34 @@
 
 namespace {
 
+/// Scan an Annex-B byte stream and return a compact string of NAL types,
+/// e.g. "7 8 5" means SPS + PPS + IDR.
+std::string DescribeNalTypes(const std::vector<uint8_t>& data) {
+    std::string result;
+    const std::size_t n = data.size();
+    for (std::size_t i = 0; i + 3 <= n; ++i) {
+        std::size_t off = 0;
+        if (i + 4 <= n && data[i] == 0 && data[i + 1] == 0 &&
+            data[i + 2] == 0 && data[i + 3] == 1) {
+            off = i + 4;
+        } else if (data[i] == 0 && data[i + 1] == 0 &&
+                   data[i + 2] == 1) {
+            off = i + 3;
+        }
+        if (off == 0 || off >= n) {
+            continue;
+        }
+        const uint8_t nal_type = data[off] & 0x1F;
+        if (!result.empty()) {
+            result += ' ';
+        }
+        result += std::to_string(static_cast<int>(nal_type));
+        // Skip past this NAL to the next start code
+        i = off;
+    }
+    return result.empty() ? "(none)" : result;
+}
+
 bool ParseUnsigned(const std::string& text, uint64_t maximum,
                    uint64_t& value) {
     if (text.empty()) {
@@ -313,6 +341,12 @@ int64_t RtpUdpPuller::ExtendTimestamp(uint32_t timestamp, uint32_t ssrc) {
 }
 
 void RtpUdpPuller::PushAccessUnit(rtp::H264AccessUnit access_unit) {
+    LOG_INFO(
+        "RtpUdpPuller: access_unit ts={}, keyframe={}, size={}, NAL types=[{}]",
+        access_unit.timestamp, access_unit.keyframe,
+        access_unit.data.size(),
+        DescribeNalTypes(access_unit.data));
+
     auto packet = std::make_shared<MediaPacket>();
     packet->type = MediaType::VIDEO;
     packet->codec = CodecType::H264;

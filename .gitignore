@@ -58,3 +58,4 @@ QT_StreamPlayer/
 # pcap 二进制库需随仓库分发（体积小，且 PcapPuller 依赖）
 !third_party/pcap/*.dll
 !third_party/pcap/*.lib
+*.pcapng

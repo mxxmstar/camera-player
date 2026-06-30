@@ -1,13 +1,15 @@
 #include "ui/main_window.h"
-#include "player/rtp_player.h"
+#include "ui/rtp_player_widget.h"
+#include "ui/page_menu.h"
 
 #include <QHBoxLayout>
 #include <QFile>
 #include <QApplication>
 #include <QPushButton>
-#include <QPixmap>
-#include <QResizeEvent>
-#include <QVBoxLayout>
+#include <QStackedWidget>
+#include <QMenuBar>
+#include <QLabel>
+#include <QMainWindow>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -23,68 +25,15 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1024, 768);
 }
 
-MainWindow::~MainWindow()
-{
-    if (m_rtpPlayer) {
-        m_rtpPlayer->Stop();
-    }
-}
-
-void MainWindow::setupCentralWidget()
-{
-    auto* centralWidget = new QWidget(this);
-    auto* rootLayout = new QVBoxLayout(centralWidget);
-    auto* controlsLayout = new QHBoxLayout();
-
-    m_localAddressEdit = new QLineEdit(QStringLiteral("0.0.0.0"), this);
-    m_localAddressEdit->setToolTip(
-        tr("Local address to bind. Use 0.0.0.0 for all interfaces."));
-
-    m_portSpin = new QSpinBox(this);
-    m_portSpin->setRange(1, 65535);
-    m_portSpin->setValue(60000);
-
-    m_cameraAddressEdit =
-        new QLineEdit(QStringLiteral("192.168.66.166"), this);
-    m_cameraAddressEdit->setToolTip(
-        tr("Only accept RTP packets from this camera address."));
-
-    m_startButton = new QPushButton(tr("Start listening"), this);
-    m_stopButton = new QPushButton(tr("Stop"), this);
-    m_stopButton->setEnabled(false);
-
-    controlsLayout->addWidget(new QLabel(tr("Local IP:"), this));
-    controlsLayout->addWidget(m_localAddressEdit);
-    controlsLayout->addWidget(new QLabel(tr("RTP port:"), this));
-    controlsLayout->addWidget(m_portSpin);
-    controlsLayout->addWidget(new QLabel(tr("Camera IP:"), this));
-    controlsLayout->addWidget(m_cameraAddressEdit);
-    controlsLayout->addWidget(m_startButton);
-    controlsLayout->addWidget(m_stopButton);
-
-    m_statusLabel = new QLabel(tr("Stopped"), this);
-    m_videoLabel = new QLabel(this);
-    m_videoLabel->setAlignment(Qt::AlignCenter);
-    m_videoLabel->setMinimumSize(640, 360);
-    m_videoLabel->setText(tr("Start the RTP listener before sending the "
-                             "camera stream command"));
-    m_videoLabel->setStyleSheet(
-        QStringLiteral("background-color: #111; color: #aaa;"));
-
-    rootLayout->addLayout(controlsLayout);
-    rootLayout->addWidget(m_statusLabel);
-    rootLayout->addWidget(m_videoLabel, 1);
-    setCentralWidget(centralWidget);
-
-    m_rtpPlayer = new RtpPlayer(this);
-}
-
 void MainWindow::setupMenuBar()
 {
     m_fileMenu = menuBar()->addMenu(tr("File"));
-    m_pageMenu = menuBar()->addMenu(tr("Page"));
+    m_pageMenu = new PageMenu(tr("Page"), this);
+    menuBar()->addMenu(m_pageMenu);
     m_toolMenu = menuBar()->addMenu(tr("Tool"));
     m_helpMenu = menuBar()->addMenu(tr("Help"));
+
+    m_rtpPlayerAction = m_pageMenu->addAction(tr("RTP Player"));
 }
 
 void MainWindow::setupToolBar()
@@ -115,6 +64,17 @@ void MainWindow::setupToolBar()
     menuBar()->setCornerWidget(m_navWidget, Qt::TopRightCorner);
 }
 
+void MainWindow::setupCentralWidget()
+{
+    m_stackedWidget = new QStackedWidget(this);
+    auto* placeholder = new QLabel(tr("No page selected"), this);
+    placeholder->setAlignment(Qt::AlignCenter);
+    m_stackedWidget->addWidget(placeholder);
+    m_rtpPlayerWidget = new RtpPlayerWidget(this);
+    m_stackedWidget->addWidget(m_rtpPlayerWidget);
+    setCentralWidget(m_stackedWidget);
+}
+
 void MainWindow::setupStyle()
 {
     QString qssPath = ":/style.qss";
@@ -137,68 +97,29 @@ void MainWindow::setupConnections()
         }
     });
 
-    connect(m_startButton, &QPushButton::clicked,
-            this, &MainWindow::startRtpPlayer);
-    connect(m_stopButton, &QPushButton::clicked,
-            this, &MainWindow::stopRtpPlayer);
-    connect(m_rtpPlayer, &RtpPlayer::FrameReady,
-            this, &MainWindow::onVideoFrame);
-    connect(m_rtpPlayer, &RtpPlayer::StateChanged,
-            this, [this](const QString& state) {
-                m_statusLabel->setText(state);
-            });
-    connect(m_rtpPlayer, &RtpPlayer::ErrorOccurred,
-            this, [this](const QString& error) {
-                m_statusLabel->setText(tr("Error: %1").arg(error));
-            });
+    connect(m_rtpPlayerAction, &QAction::triggered,
+            this, [this]() { switchToPage(1); });
+
+    connect(m_pageMenu, &PageMenu::detachPageRequested,
+            this, &MainWindow::detachPage);
 }
 
-void MainWindow::startRtpPlayer()
+void MainWindow::switchToPage(int index)
 {
-    if (m_rtpPlayer->Start(
-            m_localAddressEdit->text().trimmed(),
-            static_cast<uint16_t>(m_portSpin->value()),
-            m_cameraAddressEdit->text().trimmed())) {
-        m_startButton->setEnabled(false);
-        m_stopButton->setEnabled(true);
-        m_localAddressEdit->setEnabled(false);
-        m_portSpin->setEnabled(false);
-        m_cameraAddressEdit->setEnabled(false);
+    m_stackedWidget->setCurrentIndex(index);
+}
+
+void MainWindow::detachPage(QAction* action)
+{
+    if (action == m_rtpPlayerAction) {
+        auto* window = new QMainWindow(this);
+        window->setWindowTitle(tr("RTP Player - Detached"));
+        window->setWindowIcon(QIcon(":/res/icon/logo.ico"));
+        window->resize(800, 600);
+
+        auto* widget = new RtpPlayerWidget(window);
+        window->setCentralWidget(widget);
+        window->setAttribute(Qt::WA_DeleteOnClose);
+        window->show();
     }
-}
-
-void MainWindow::stopRtpPlayer()
-{
-    m_rtpPlayer->Stop();
-    m_startButton->setEnabled(true);
-    m_stopButton->setEnabled(false);
-    m_localAddressEdit->setEnabled(true);
-    m_portSpin->setEnabled(true);
-    m_cameraAddressEdit->setEnabled(true);
-}
-
-void MainWindow::onVideoFrame(const QImage& image)
-{
-    m_lastFrame = image;
-    updateVideoPixmap();
-    m_statusLabel->setText(
-        tr("Playing %1x%2").arg(image.width()).arg(image.height()));
-}
-
-void MainWindow::updateVideoPixmap()
-{
-    if (m_lastFrame.isNull()) {
-        return;
-    }
-    m_videoLabel->setPixmap(
-        QPixmap::fromImage(m_lastFrame).scaled(
-            m_videoLabel->size(),
-            Qt::KeepAspectRatio,
-            Qt::SmoothTransformation));
-}
-
-void MainWindow::resizeEvent(QResizeEvent* event)
-{
-    QMainWindow::resizeEvent(event);
-    updateVideoPixmap();
 }

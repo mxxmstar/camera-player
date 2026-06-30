@@ -1,26 +1,20 @@
 #pragma once
 
 #include <QMainWindow>
-#include <QMenuBar>
-#include <QToolBar>
+#include <QMenu>
 #include <QAction>
 #include <QComboBox>
-#include <QImage>
-#include <QLineEdit>
-#include <QMenu>
-#include <QLabel>
-#include <QPushButton>
-#include <QSpinBox>
 
-class QResizeEvent;
-class RtpPlayer;
+class QStackedWidget;
+class PageMenu;
+class RtpPlayerWidget;
 
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-    ~MainWindow() override;
+    ~MainWindow() override = default;
 
 private:
     void setupMenuBar();
@@ -28,17 +22,11 @@ private:
     void setupCentralWidget();
     void setupStyle();
     void setupConnections();
-    void updateVideoPixmap();
-    void startRtpPlayer();
-    void stopRtpPlayer();
-    void onVideoFrame(const QImage& image);
+    void switchToPage(int index);
+    void detachPage(QAction* action);
 
-protected:
-    void resizeEvent(QResizeEvent* event) override;
-
-private:
     QMenu* m_fileMenu;
-    QMenu* m_pageMenu;
+    PageMenu* m_pageMenu;
     QMenu* m_toolMenu;
     QMenu* m_helpMenu;
 
@@ -47,13 +35,7 @@ private:
     QComboBox* m_langCombo;
     QWidget* m_navWidget;
 
-    QLineEdit* m_localAddressEdit;
-    QSpinBox* m_portSpin;
-    QLineEdit* m_cameraAddressEdit;
-    QPushButton* m_startButton;
-    QPushButton* m_stopButton;
-    QLabel* m_statusLabel;
-    QLabel* m_videoLabel;
-    QImage m_lastFrame;
-    RtpPlayer* m_rtpPlayer;
+    QStackedWidget* m_stackedWidget;
+    RtpPlayerWidget* m_rtpPlayerWidget;
+    QAction* m_rtpPlayerAction;
 };

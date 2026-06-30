@@ -214,6 +214,101 @@ void TestLossDropsOnlyCurrentAccessUnit() {
         "lost packet count");
 }
 
+void TestSpsPpsCachedAcrossDroppedKeyframe() {
+    rtp::H264RtpDepacketizer depacketizer;
+    rtp::H264AccessUnit output;
+
+    // SPS (type 7) and PPS (type 8) arrive at timestamp 1000.
+    (void)PushDatagram(
+        depacketizer,
+        BuildRtp(1, 1000, false, {0x67, 0x64, 0x00, 0x32}),
+        output);
+    (void)PushDatagram(
+        depacketizer,
+        BuildRtp(2, 1000, false, {0x68, 0xEE}),
+        output);
+
+    // seq 3 is lost; the IDR (marker) at seq 4 triggers a gap inside the
+    // same timestamp, so the whole access unit — including the already
+    // received SPS/PPS — is dropped.
+    Require(
+        PushDatagram(
+            depacketizer,
+            BuildRtp(4, 1000, true, {0x65, 0xAA, 0xBB}),
+            output) == rtp::H264RtpDepacketizer::Result::Dropped,
+        "gap inside keyframe access unit drops it");
+
+    // A later IDR at a new timestamp must recover: the cached SPS/PPS
+    // should be prepended so the decoder has the parameter sets.
+    Require(
+        PushDatagram(
+            depacketizer,
+            BuildRtp(5, 2000, true, {0x65, 0xCC, 0xDD}),
+            output) ==
+            rtp::H264RtpDepacketizer::Result::AccessUnitReady,
+        "later keyframe recovers");
+    Require(output.keyframe, "recovered keyframe flag");
+    Require(
+        output.data ==
+            std::vector<uint8_t>({
+                0, 0, 0, 1, 0x67, 0x64, 0x00, 0x32,
+                0, 0, 0, 1, 0x68, 0xEE,
+                0, 0, 0, 1, 0x65, 0xCC, 0xDD}),
+        "cached SPS/PPS prepended to recovered keyframe");
+}
+
+void TestSpsPpsNotDuplicatedWhenPresent() {
+    rtp::H264RtpDepacketizer depacketizer;
+    rtp::H264AccessUnit output;
+
+    // First keyframe: SPS + PPS + IDR all arrive intact (no gap).
+    Require(
+        PushDatagram(
+            depacketizer,
+            BuildRtp(1, 1000, false, {0x67, 0x64, 0x00, 0x32}),
+            output) ==
+            rtp::H264RtpDepacketizer::Result::NeedMore,
+        "SPS");
+    Require(
+        PushDatagram(
+            depacketizer,
+            BuildRtp(2, 1000, false, {0x68, 0xEE}),
+            output) ==
+            rtp::H264RtpDepacketizer::Result::NeedMore,
+        "PPS");
+    Require(
+        PushDatagram(
+            depacketizer,
+            BuildRtp(3, 1000, true, {0x65, 0xAA, 0xBB}),
+            output) ==
+            rtp::H264RtpDepacketizer::Result::AccessUnitReady,
+        "IDR");
+    Require(
+        output.data ==
+            std::vector<uint8_t>({
+                0, 0, 0, 1, 0x67, 0x64, 0x00, 0x32,
+                0, 0, 0, 1, 0x68, 0xEE,
+                0, 0, 0, 1, 0x65, 0xAA, 0xBB}),
+        "first keyframe has SPS/PPS, no duplication");
+
+    // Second keyframe: IDR only (no SPS/PPS in-band). The cached SPS/PPS
+    // should be prepended exactly once.
+    Require(
+        PushDatagram(
+            depacketizer,
+            BuildRtp(4, 2000, true, {0x65, 0xCC, 0xDD}),
+            output) ==
+            rtp::H264RtpDepacketizer::Result::AccessUnitReady,
+        "second IDR");
+    Require(
+        output.data ==
+            std::vector<uint8_t>({
+                0, 0, 0, 1, 0x67, 0x64, 0x00, 0x32,
+                0, 0, 0, 1, 0x68, 0xEE,
+                0, 0, 0, 1, 0x65, 0xCC, 0xDD}),
+        "cached SPS/PPS prepended to IDR-only keyframe");
+}
+
 std::vector<uint8_t> DecodeHex(const std::string& text) {
     Require(text.size() % 2 == 0, "hex payload length");
     std::vector<uint8_t> bytes;
@@ -326,6 +421,8 @@ int main(int argc, char** argv) {
     TestStandardFuA();
     TestCameraAnnexBFragmentation();
     TestLossDropsOnlyCurrentAccessUnit();
+    TestSpsPpsCachedAcrossDroppedKeyframe();
+    TestSpsPpsNotDuplicatedWhenPresent();
     std::cout << "All RTP protocol tests passed.\n";
     return 0;
 }

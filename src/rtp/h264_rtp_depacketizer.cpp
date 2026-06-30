@@ -23,7 +23,8 @@ bool IsKeyNal(uint8_t nal_type) {
     return nal_type == 5;
 }
 
-bool ContainsIdr(const std::vector<uint8_t>& data) {
+bool ContainsNalType(const std::vector<uint8_t>& data,
+                     uint8_t nal_type) {
     for (std::size_t i = 0; i + 4 < data.size(); ++i) {
         std::size_t nal_offset = 0;
         if (data[i] == 0 && data[i + 1] == 0 &&
@@ -35,7 +36,7 @@ bool ContainsIdr(const std::vector<uint8_t>& data) {
             nal_offset = i + 4;
         }
         if (nal_offset != 0 &&
-            (data[nal_offset] & kNalTypeMask) == 5) {
+            (data[nal_offset] & kNalTypeMask) == nal_type) {
             return true;
         }
     }
@@ -59,6 +60,8 @@ void H264RtpDepacketizer::Reset() {
     current_ssrc_ = 0;
     has_expected_sequence_ = false;
     expected_sequence_ = 0;
+    cached_sps_.clear();
+    cached_pps_.clear();
     stats_ = {};
 }
 
@@ -68,6 +71,54 @@ void H264RtpDepacketizer::ResetAccessUnit() {
     fu_active_ = false;
     has_timestamp_ = false;
     current_timestamp_ = 0;
+}
+
+void H264RtpDepacketizer::CacheParameterSetsFromAccessUnit() {
+    const std::vector<uint8_t>& d = access_unit_;
+    std::size_t i = 0;
+    while (i + 3 <= d.size()) {
+        std::size_t sc_len = 0;
+        if (i + 4 <= d.size() && d[i] == 0 && d[i + 1] == 0 &&
+            d[i + 2] == 0 && d[i + 3] == 1) {
+            sc_len = 4;
+        } else if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
+            sc_len = 3;
+        } else {
+            ++i;
+            continue;
+        }
+
+        const std::size_t nal_start = i + sc_len;
+        if (nal_start >= d.size()) {
+            break;
+        }
+        const uint8_t nal_type = d[nal_start] & kNalTypeMask;
+
+        // Scan to the next start code (or end of buffer). The loop must
+        // allow j to reach d.size() so a NAL at the very end is captured
+        // in full — using `j + 3 <= d.size()` here would truncate the
+        // trailing bytes when fewer than 3 bytes remain.
+        std::size_t j = nal_start + 1;
+        while (j < d.size()) {
+            if (j + 4 <= d.size() && d[j] == 0 && d[j + 1] == 0 &&
+                d[j + 2] == 0 && d[j + 3] == 1) {
+                break;
+            }
+            if (j + 3 <= d.size() && d[j] == 0 && d[j + 1] == 0 &&
+                d[j + 2] == 1) {
+                break;
+            }
+            ++j;
+        }
+
+        if (nal_type == 7 && j > nal_start) {
+            cached_sps_.assign(d.begin() + nal_start, d.begin() + j);
+        } else if (nal_type == 8 && j > nal_start) {
+            cached_pps_.assign(d.begin() + nal_start, d.begin() + j);
+        }
+
+        i = j;
+    }
 }
 
 bool H264RtpDepacketizer::Append(const uint8_t* data, std::size_t size) {
@@ -101,6 +152,10 @@ bool H264RtpDepacketizer::PacketCanStartUnit(
 
 H264RtpDepacketizer::Result H264RtpDepacketizer::DropCurrentTimestamp(
     const ParsedRtpPacket& packet, bool malformed) {
+    // Preserve any SPS/PPS accumulated so far, so they can be prepended
+    // to a later keyframe if this access unit is discarded due to a gap.
+    CacheParameterSetsFromAccessUnit();
+
     if (!dropping_timestamp_ || dropped_timestamp_ != packet.timestamp) {
         ++stats_.dropped_access_units;
     }
@@ -233,10 +288,35 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::FinishIfMarked(
         return DropCurrentTimestamp(packet, true);
     }
 
+    CacheParameterSetsFromAccessUnit();
+
     output.data = std::move(access_unit_);
     output.timestamp = packet.timestamp;
     output.ssrc = packet.ssrc;
-    output.keyframe = keyframe_ || ContainsIdr(output.data);
+    output.keyframe = keyframe_ || ContainsNalType(output.data, 5);
+
+    if (output.keyframe) {
+        std::vector<uint8_t> prefix;
+        if (!cached_sps_.empty() &&
+            !ContainsNalType(output.data, 7)) {
+            prefix.insert(prefix.end(), kAnnexBStartCode,
+                          kAnnexBStartCode + sizeof(kAnnexBStartCode));
+            prefix.insert(prefix.end(), cached_sps_.begin(),
+                          cached_sps_.end());
+        }
+        if (!cached_pps_.empty() &&
+            !ContainsNalType(output.data, 8)) {
+            prefix.insert(prefix.end(), kAnnexBStartCode,
+                          kAnnexBStartCode + sizeof(kAnnexBStartCode));
+            prefix.insert(prefix.end(), cached_pps_.begin(),
+                          cached_pps_.end());
+        }
+        if (!prefix.empty()) {
+            output.data.insert(output.data.begin(),
+                               prefix.begin(), prefix.end());
+        }
+    }
+
     ++stats_.access_units;
 
     access_unit_.clear();
@@ -260,6 +340,7 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::Push(
 
     if (has_ssrc_ && current_ssrc_ != packet.ssrc) {
         if (!access_unit_.empty()) {
+            CacheParameterSetsFromAccessUnit();
             ++stats_.dropped_access_units;
         }
         ResetAccessUnit();
@@ -288,6 +369,7 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::Push(
         }
 
         if (!access_unit_.empty()) {
+            CacheParameterSetsFromAccessUnit();
             ++stats_.dropped_access_units;
         }
         ResetAccessUnit();
@@ -308,6 +390,7 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::Push(
 
     if (has_timestamp_ && current_timestamp_ != packet.timestamp) {
         if (!access_unit_.empty()) {
+            CacheParameterSetsFromAccessUnit();
             ++stats_.dropped_access_units;
         }
         ResetAccessUnit();
