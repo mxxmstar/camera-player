@@ -1,4 +1,5 @@
 #include "ui/main_window.h"
+#include "ui/avtp_player_widget.h"
 #include "ui/rtp_player_widget.h"
 #include "ui/page_menu.h"
 
@@ -34,6 +35,7 @@ void MainWindow::setupMenuBar()
     m_helpMenu = menuBar()->addMenu(tr("Help"));
 
     m_rtpPlayerAction = m_pageMenu->addAction(tr("RTP Player"));
+    m_avtpPlayerAction = m_pageMenu->addAction(tr("AVTP Player"));
 }
 
 void MainWindow::setupToolBar()
@@ -72,6 +74,8 @@ void MainWindow::setupCentralWidget()
     m_stackedWidget->addWidget(placeholder);
     m_rtpPlayerWidget = new RtpPlayerWidget(this);
     m_stackedWidget->addWidget(m_rtpPlayerWidget);
+    m_avtpPlayerWidget = new AvtpPlayerWidget(this);
+    m_stackedWidget->addWidget(m_avtpPlayerWidget);
     setCentralWidget(m_stackedWidget);
 }
 
@@ -99,6 +103,8 @@ void MainWindow::setupConnections()
 
     connect(m_rtpPlayerAction, &QAction::triggered,
             this, [this]() { switchToPage(1); });
+    connect(m_avtpPlayerAction, &QAction::triggered,
+            this, [this]() { switchToPage(2); });
 
     connect(m_pageMenu, &PageMenu::detachPageRequested,
             this, &MainWindow::detachPage);
@@ -118,6 +124,16 @@ void MainWindow::detachPage(QAction* action)
         window->resize(800, 600);
 
         auto* widget = new RtpPlayerWidget(window);
+        window->setCentralWidget(widget);
+        window->setAttribute(Qt::WA_DeleteOnClose);
+        window->show();
+    } else if (action == m_avtpPlayerAction) {
+        auto* window = new QMainWindow(this);
+        window->setWindowTitle(tr("AVTP Player - Detached"));
+        window->setWindowIcon(QIcon(":/res/icon/logo.ico"));
+        window->resize(900, 600);
+
+        auto* widget = new AvtpPlayerWidget(window);
         window->setCentralWidget(widget);
         window->setAttribute(Qt::WA_DeleteOnClose);
         window->show();

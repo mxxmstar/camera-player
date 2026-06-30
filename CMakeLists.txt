@@ -66,6 +66,32 @@ if(ENABLE_PCAP)
             ${PCAP_ROOT}/Packet.lib
         )
     endif()
+
+    if(WIN32)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(PCAP_SYSTEM_RUNTIME_DIR "$ENV{WINDIR}/System32/Npcap")
+        else()
+            set(PCAP_SYSTEM_RUNTIME_DIR "$ENV{WINDIR}/SysWOW64/Npcap")
+        endif()
+
+        if(EXISTS "${PCAP_SYSTEM_RUNTIME_DIR}/wpcap.dll" AND
+           EXISTS "${PCAP_SYSTEM_RUNTIME_DIR}/Packet.dll")
+            set(PCAP_RUNTIME_DLLS
+                "${PCAP_SYSTEM_RUNTIME_DIR}/wpcap.dll"
+                "${PCAP_SYSTEM_RUNTIME_DIR}/Packet.dll"
+            )
+            message(STATUS "Using installed Npcap runtime DLLs from ${PCAP_SYSTEM_RUNTIME_DIR}")
+        else()
+            set(PCAP_RUNTIME_DLLS
+                ${PCAP_ROOT}/wpcap.dll
+                ${PCAP_ROOT}/packet.dll
+            )
+            message(WARNING
+                "Installed Npcap runtime DLLs were not found; falling back to "
+                "${PCAP_ROOT}. Device enumeration may be unavailable until "
+                "Npcap is installed.")
+        endif()
+    endif()
 endif()
 
 # ============================================================
@@ -151,6 +177,7 @@ list(APPEND SOURCES ${GLAD_SOURCE})
 # 当 ENABLE_PCAP=OFF 时，从源文件列表中排除 PcapPuller 实现
 if(NOT ENABLE_PCAP)
     list(FILTER SOURCES EXCLUDE REGEX ".*/pcap_puller\\.cpp$")
+    list(FILTER SOURCES EXCLUDE REGEX ".*/avtp_puller\\.cpp$")
 endif()
 
 add_executable(${PROJECT_NAME} ${SOURCES} ${RESOURCE_FILES})
@@ -219,11 +246,16 @@ if(WIN32)
         ${QT6_ROOT}/bin/Qt6OpenGLd.dll
     )
 
-    # Npcap 运行期 DLL（随程序分发，避免要求用户安装 Npcap）
+    # PcapPuller loads the installed Npcap runtime explicitly from
+    # %WINDIR%/System32/Npcap at run time. Do not keep app-local pcap DLLs
+    # here: WinPcap-compatible copies can load successfully while enumerating
+    # zero NPF devices on modern Windows/Npcap installations.
     if(ENABLE_PCAP)
-        set(PCAP_DLLS
-            ${PCAP_ROOT}/wpcap.dll
-            ${PCAP_ROOT}/packet.dll
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E remove -f
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>/wpcap.dll
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>/Packet.dll
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>/packet.dll
         )
     endif()
 
@@ -238,16 +270,6 @@ if(WIN32)
     endforeach()
 
     foreach(dll ${QT6_DLLS})
-        if(EXISTS ${dll})
-            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${dll}
-                $<TARGET_FILE_DIR:${PROJECT_NAME}>
-            )
-        endif()
-    endforeach()
-
-    foreach(dll ${PCAP_DLLS})
         if(EXISTS ${dll})
             add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -283,12 +305,23 @@ if(BUILD_TESTS)
     )
     add_test(NAME rtp_protocol COMMAND ${PROJECT_NAME}_rtp_tests)
 
+    add_executable(${PROJECT_NAME}_avtp_tests
+        tests/avtp_protocol_tests.cpp
+        src/avtp/avtp_packet_parser.cpp
+        src/avtp/avtp_h264_assembler.cpp
+    )
+    target_include_directories(${PROJECT_NAME}_avtp_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+    )
+    add_test(NAME avtp_protocol COMMAND ${PROJECT_NAME}_avtp_tests)
+
     file(GLOB_RECURSE TEST_SOURCES
         tests/*.cpp
         tests/*.hpp
         tests/*.h
     )
     list(FILTER TEST_SOURCES EXCLUDE REGEX ".*/rtp_protocol_tests\\.cpp$")
+    list(FILTER TEST_SOURCES EXCLUDE REGEX ".*/avtp_protocol_tests\\.cpp$")
 
     if(TEST_SOURCES)
         # 测试程序复用主程序的所有源文件（包括 ws/http/rtsp 等模块实现），
@@ -300,13 +333,32 @@ if(BUILD_TESTS)
 
         target_include_directories(${PROJECT_NAME}_tests PRIVATE
             ${CMAKE_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/third_party
             ${ASIO_INCLUDE_DIR}
             ${SPDLOG_INCLUDE_DIR}
+            ${GLFW3_INCLUDE_DIR}
+            ${GLAD_INCLUDE_DIR}
+            ${FFMPEG_INCLUDE_DIR}
+            ${QT6_INCLUDE_DIR}
         )
+
+        if(ENABLE_PCAP)
+            target_include_directories(${PROJECT_NAME}_tests PRIVATE ${PCAP_INCLUDE_DIR})
+            target_compile_definitions(${PROJECT_NAME}_tests PRIVATE ENABLE_PCAP=1)
+        endif()
 
         target_link_libraries(${PROJECT_NAME}_tests PRIVATE Threads::Threads)
         if(WIN32)
             target_link_libraries(${PROJECT_NAME}_tests PRIVATE ws2_32 mswsock)
+            target_link_libraries(${PROJECT_NAME}_tests PRIVATE opengl32 ${GLFW3_LIBRARY})
+            target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${FFMPEG_LIBRARIES})
+            target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${QT6_LIBRARIES})
+            if(ENABLE_PCAP)
+                target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${PCAP_LIBRARIES})
+            endif()
+            if(BCMTOOL_ENABLED)
+                target_link_libraries(${PROJECT_NAME}_tests PRIVATE bcmtool)
+            endif()
         endif()
     endif()
 endif()

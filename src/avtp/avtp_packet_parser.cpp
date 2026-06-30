@@ -1,0 +1,217 @@
+#include "avtp/avtp_packet_parser.h"
+
+#include <algorithm>
+
+namespace avtp {
+namespace {
+
+constexpr uint16_t kEtherTypeVlan = 0x8100;
+constexpr uint16_t kEtherTypeProviderBridge = 0x88A8;
+constexpr uint16_t kEtherTypeQinQ = 0x9100;
+constexpr std::size_t kEthernetHeaderSize = 14;
+constexpr std::size_t kMaxVlanTags = 2;
+
+uint16_t ReadBe16(const uint8_t* data) {
+    return static_cast<uint16_t>(
+        (static_cast<uint16_t>(data[0]) << 8) |
+        static_cast<uint16_t>(data[1]));
+}
+
+uint32_t ReadBe32(const uint8_t* data) {
+    return (static_cast<uint32_t>(data[0]) << 24) |
+           (static_cast<uint32_t>(data[1]) << 16) |
+           (static_cast<uint32_t>(data[2]) << 8) |
+           static_cast<uint32_t>(data[3]);
+}
+
+uint64_t ReadBe64(const uint8_t* data) {
+    uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value = (value << 8) | static_cast<uint64_t>(data[i]);
+    }
+    return value;
+}
+
+bool IsVlanEtherType(uint16_t ether_type) {
+    return ether_type == kEtherTypeVlan ||
+           ether_type == kEtherTypeProviderBridge ||
+           ether_type == kEtherTypeQinQ;
+}
+
+void SetError(ParseError* error, ParseError value) {
+    if (error) {
+        *error = value;
+    }
+}
+
+} // namespace
+
+bool IsSameMac(const MacAddress& lhs, const MacAddress& rhs) {
+    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
+}
+
+MacAddress ZeroMac() {
+    return MacAddress{};
+}
+
+bool AvtpPacketParser::Parse(const uint8_t* data, std::size_t size,
+                             ParsedCvfPacket& packet,
+                             ParseError* error) {
+    packet = {};
+    SetError(error, ParseError::None);
+
+    if (!data) {
+        SetError(error, ParseError::TooShort);
+        return false;
+    }
+
+    std::size_t avtp_offset = 0;
+    ParsedCvfPacket ethernet_packet;
+    ParseError ethernet_error = ParseError::None;
+    if (ParseEthernetPrefix(data, size, ethernet_packet, avtp_offset,
+                            &ethernet_error)) {
+        packet = ethernet_packet;
+        return ParseCvfPdu(data + avtp_offset, size - avtp_offset,
+                           packet, error);
+    }
+
+    // Allow callers that already stripped the Ethernet header to pass the
+    // AVTP/CVF PDU directly. This is useful in tests and when capture layers
+    // are configured differently.
+    if (size >= 1 && data[0] == kSubtypeCvf) {
+        return ParseCvfPdu(data, size, packet, error);
+    }
+
+    SetError(error, ethernet_error);
+    return false;
+}
+
+bool AvtpPacketParser::ParseEthernetPrefix(const uint8_t* data,
+                                           std::size_t size,
+                                           ParsedCvfPacket& packet,
+                                           std::size_t& avtp_offset,
+                                           ParseError* error) {
+    packet = {};
+    avtp_offset = 0;
+
+    if (!data || size < kEthernetHeaderSize) {
+        SetError(error, ParseError::TooShort);
+        return false;
+    }
+
+    std::copy(data, data + 6, packet.destination_mac.begin());
+    std::copy(data + 6, data + 12, packet.source_mac.begin());
+
+    uint16_t ether_type = ReadBe16(data + 12);
+    std::size_t offset = kEthernetHeaderSize;
+    for (std::size_t tag = 0; tag < kMaxVlanTags && IsVlanEtherType(ether_type);
+         ++tag) {
+        if (size < offset + 4) {
+            SetError(error, ParseError::TooShort);
+            return false;
+        }
+        ether_type = ReadBe16(data + offset + 2);
+        offset += 4;
+    }
+
+    if (ether_type != kEtherTypeAvtp) {
+        SetError(error, ParseError::UnsupportedEtherType);
+        return false;
+    }
+
+    packet.has_ethernet_header = true;
+    packet.ether_type = ether_type;
+    packet.avtp_offset = offset;
+    avtp_offset = offset;
+    SetError(error, ParseError::None);
+    return true;
+}
+
+bool AvtpPacketParser::ParseCvfPdu(const uint8_t* data, std::size_t size,
+                                   ParsedCvfPacket& packet,
+                                   ParseError* error) {
+    const bool had_ethernet = packet.has_ethernet_header;
+    const MacAddress destination = packet.destination_mac;
+    const MacAddress source = packet.source_mac;
+    const uint16_t ether_type = packet.ether_type;
+    const std::size_t avtp_offset = packet.avtp_offset;
+
+    ParsedCvfPacket parsed;
+    parsed.has_ethernet_header = had_ethernet;
+    parsed.destination_mac = destination;
+    parsed.source_mac = source;
+    parsed.ether_type = ether_type;
+    parsed.avtp_offset = avtp_offset;
+
+    if (!data || size < kCvfHeaderSize) {
+        SetError(error, ParseError::TooShort);
+        return false;
+    }
+
+    parsed.subtype = data[0];
+    if (parsed.subtype != kSubtypeCvf) {
+        SetError(error, ParseError::UnsupportedSubtype);
+        return false;
+    }
+
+    parsed.stream_id_valid = (data[1] & 0x80U) != 0;
+    parsed.version = static_cast<uint8_t>((data[1] & 0x70U) >> 4);
+    parsed.media_clock_restart = (data[1] & 0x08U) != 0;
+    parsed.timestamp_valid = (data[1] & 0x01U) != 0;
+    if (parsed.version != 0) {
+        SetError(error, ParseError::UnsupportedVersion);
+        return false;
+    }
+
+    parsed.sequence_num = data[2];
+    parsed.timestamp_uncertain = (data[3] & 0x01U) != 0;
+    parsed.stream_id = ReadBe64(data + 4);
+    parsed.avtp_timestamp = ReadBe32(data + 12);
+    parsed.format = data[16];
+    parsed.format_subtype = data[17];
+    if (parsed.format != kCvfFormatRfc ||
+        parsed.format_subtype != kCvfFormatSubtypeH264) {
+        SetError(error, ParseError::UnsupportedFormat);
+        return false;
+    }
+
+    parsed.stream_data_length = ReadBe16(data + 20);
+    parsed.h264_payload_timestamp_valid = (data[22] & 0x20U) != 0;
+    parsed.marker = (data[22] & 0x10U) != 0;
+    parsed.event = static_cast<uint8_t>(data[22] & 0x0FU);
+
+    if (static_cast<std::size_t>(parsed.stream_data_length) >
+        size - kCvfHeaderSize) {
+        SetError(error, ParseError::StreamDataLengthTooLarge);
+        return false;
+    }
+
+    parsed.payload = data + kCvfHeaderSize;
+    parsed.payload_size = parsed.stream_data_length;
+
+    packet = parsed;
+    SetError(error, ParseError::None);
+    return true;
+}
+
+const char* AvtpPacketParser::ErrorToString(ParseError error) {
+    switch (error) {
+        case ParseError::None:
+            return "none";
+        case ParseError::TooShort:
+            return "packet too short";
+        case ParseError::UnsupportedEtherType:
+            return "unsupported EtherType";
+        case ParseError::UnsupportedSubtype:
+            return "unsupported AVTP subtype";
+        case ParseError::UnsupportedVersion:
+            return "unsupported AVTP version";
+        case ParseError::UnsupportedFormat:
+            return "unsupported CVF format";
+        case ParseError::StreamDataLengthTooLarge:
+            return "stream data length exceeds packet size";
+    }
+    return "unknown parse error";
+}
+
+} // namespace avtp

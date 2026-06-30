@@ -1,9 +1,14 @@
-#include "player/rtp_player.h"
+#include "player/avtp_player.h"
 
 #include "decoder/ffmpeg_decoder.hpp"
 #include "log/logger.h"
 #include "media/media_frame.hpp"
-#include "puller/rtp_udp_puller.hpp"
+#include "puller/i_puller.hpp"
+
+#ifdef ENABLE_PCAP
+#include "puller/avtp_puller.hpp"
+#include "puller/pcap_puller.hpp"
+#endif
 
 #include <chrono>
 #include <utility>
@@ -13,41 +18,43 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-RtpPlayer::RtpPlayer(QObject* parent)
+AvtpPlayer::AvtpPlayer(QObject* parent)
     : QObject(parent),
       decoder_(std::make_unique<FFmpegDecoder>()) {
 }
 
-RtpPlayer::~RtpPlayer() {
+AvtpPlayer::~AvtpPlayer() {
     Stop();
 }
 
-bool RtpPlayer::Start(const QString& local_address, uint16_t local_port,
-                      const QString& camera_address) {
-    return StartRtp(local_address, local_port, camera_address);
-}
-
-bool RtpPlayer::StartRtp(const QString& local_address, uint16_t local_port,
-                         const QString& camera_address) {
+bool AvtpPlayer::Start(const QString& device_name,
+                       const QString& source_mac,
+                       const QString& stream_id) {
     Stop();
 
-    puller_ = std::make_unique<RtpUdpPuller>();
-    puller_->SetReadTimeoutMs(100);
-    puller_->SetEventCallback([this](const std::string& message) {
+#ifdef ENABLE_PCAP
+    const QString device =
+        device_name.trimmed().isEmpty()
+            ? QStringLiteral("default")
+            : device_name.trimmed();
+
+    QString url = QStringLiteral(
+        "avtp://%1?queue=1024&read_timeout=100&fps=25")
+                      .arg(device);
+    if (!source_mac.trimmed().isEmpty()) {
+        url += QStringLiteral("&src=%1").arg(source_mac.trimmed());
+    }
+    if (!stream_id.trimmed().isEmpty()) {
+        url += QStringLiteral("&stream=%1").arg(stream_id.trimmed());
+    }
+
+    auto puller = std::make_unique<AvtpPuller>();
+    puller->SetReadTimeoutMs(100);
+    puller->SetEventCallback([this](const std::string& message) {
         emit ErrorOccurred(QString::fromStdString(message));
     });
 
-    QString url = QStringLiteral(
-        "rtp://%1:%2?pt=96&recv_buffer=4194304&queue=64")
-                      .arg(local_address)
-                      .arg(local_port);
-    if (!camera_address.trimmed().isEmpty()) {
-        url += QStringLiteral("&remote=%1")
-                   .arg(camera_address.trimmed());
-    }
-
-    if (!puller_->Open(url.toStdString())) {
-        puller_.reset();
+    if (!puller->Open(url.toStdString())) {
         return false;
     }
 
@@ -55,21 +62,28 @@ bool RtpPlayer::StartRtp(const QString& local_address, uint16_t local_port,
         [this](std::shared_ptr<MediaFrame> frame) {
             ConvertAndPublishFrame(std::move(frame));
         });
-    if (!decoder_->Open(puller_->GetStreamInfo())) {
+    if (!decoder_->Open(puller->GetStreamInfo())) {
         emit ErrorOccurred(QStringLiteral("无法打开 FFmpeg H.264 解码器"));
         decoder_->SetFrameCallback({});
-        puller_->Close();
-        puller_.reset();
+        puller->Close();
         return false;
     }
 
+    puller_ = std::move(puller);
     running_ = true;
-    worker_ = std::thread(&RtpPlayer::Run, this);
-    emit StateChanged(QStringLiteral("监听中，等待摄像头 RTP"));
+    worker_ = std::thread(&AvtpPlayer::Run, this);
+    emit StateChanged(QStringLiteral("监听中，等待摄像头 AVTP/CVF"));
     return true;
+#else
+    (void)device_name;
+    (void)source_mac;
+    (void)stream_id;
+    emit ErrorOccurred(QStringLiteral("当前构建未启用 pcap，无法监听 AVTP"));
+    return false;
+#endif
 }
 
-void RtpPlayer::Stop() {
+void AvtpPlayer::Stop() {
     const bool was_running = running_.exchange(false);
     if (puller_) {
         puller_->Close();
@@ -93,13 +107,13 @@ void RtpPlayer::Stop() {
     }
 }
 
-void RtpPlayer::Run() {
+void AvtpPlayer::Run() {
     auto last_report = std::chrono::steady_clock::now();
     while (running_) {
         std::shared_ptr<MediaPacket> packet;
         if (!puller_->ReadPacket(packet)) {
             if (running_) {
-                emit ErrorOccurred(QStringLiteral("RTP 接收已中断"));
+                emit ErrorOccurred(QStringLiteral("AVTP 接收已中断"));
             }
             break;
         }
@@ -109,30 +123,54 @@ void RtpPlayer::Run() {
 
         const auto now = std::chrono::steady_clock::now();
         if (now - last_report >= std::chrono::seconds(2)) {
-            const RtpUdpPuller::Stats stats = puller_->GetStats();
-            LOG_INFO(
-                "RTP RX: udp={}, filtered={}, invalid={}, lost={}, "
-                "malformed={}, access_units={}, queue_drops={}",
-                stats.udp_packets,
-                stats.filtered_packets,
-                stats.invalid_rtp_packets,
-                stats.depacketizer.lost_packets,
-                stats.depacketizer.malformed_packets,
-                stats.access_units,
-                stats.queue_drops);
-            emit StateChanged(
-                QStringLiteral(
-                    "RTP UDP=%1, H264帧=%2, 丢包=%3, 过滤=%4")
-                    .arg(stats.udp_packets)
-                    .arg(stats.access_units)
-                    .arg(stats.depacketizer.lost_packets)
-                    .arg(stats.filtered_packets));
+            ReportStats();
             last_report = now;
         }
     }
 }
 
-void RtpPlayer::ConvertAndPublishFrame(
+void AvtpPlayer::ReportStats() {
+#ifdef ENABLE_PCAP
+    auto* avtp_puller = dynamic_cast<AvtpPuller*>(puller_.get());
+    if (!avtp_puller) {
+        return;
+    }
+    const AvtpPuller::Stats stats = avtp_puller->GetStats();
+    LOG_INFO(
+        "AVTP RX: raw={}, video={}, filtered={}, parse_errors={}, "
+        "lost={}, malformed={}, access_units={}",
+        stats.raw_packets,
+        stats.parsed_video_packets,
+        stats.filtered_packets,
+        stats.parse_errors,
+        stats.assembler.lost_packets,
+        stats.assembler.malformed_packets,
+        stats.access_units);
+    emit StateChanged(
+        QStringLiteral("AVTP 包=%1, H264帧=%2, 丢包=%3, 解析错误=%4")
+            .arg(stats.raw_packets)
+            .arg(stats.access_units)
+            .arg(stats.assembler.lost_packets)
+            .arg(stats.parse_errors));
+#endif
+}
+
+QVector<AvtpPlayer::CaptureDevice> AvtpPlayer::ListCaptureDevices() {
+    QVector<CaptureDevice> result;
+#ifdef ENABLE_PCAP
+    const auto devices = PcapPuller::ListDevices();
+    result.reserve(static_cast<int>(devices.size()));
+    for (const auto& device : devices) {
+        result.push_back(
+            CaptureDevice{
+                QString::fromStdString(device.name),
+                QString::fromStdString(device.description)});
+    }
+#endif
+    return result;
+}
+
+void AvtpPlayer::ConvertAndPublishFrame(
     std::shared_ptr<MediaFrame> frame) {
     if (!running_ || !frame ||
         frame->backend.type != BackendHandle::FFMPEG ||

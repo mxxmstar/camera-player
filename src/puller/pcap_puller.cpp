@@ -4,13 +4,257 @@
 #include "media/simple_buffer.hpp"
 #include "stream/stream_info.h"
 
+#include <array>
 #include <chrono>
+#include <string>
 #include <utility>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace {
 constexpr int    kPcapSnapLen  = 65536;   ///< 抓包最大长度
 constexpr int    kPcapTimeout  = 1000;    ///< pcap_open_live 读超时（ms）
 constexpr size_t kEthernetHeaderLen = 14; ///< 以太网头长度
+
+struct PcapApi {
+    using findalldevs_fn = int(__cdecl*)(pcap_if_t**, char*);
+    using freealldevs_fn = void(__cdecl*)(pcap_if_t*);
+    using lookupdev_fn = char*(__cdecl*)(char*);
+    using open_live_fn = pcap_t*(__cdecl*)(const char*, int, int, int, char*);
+    using compile_fn = int(__cdecl*)(pcap_t*, bpf_program*, const char*, int,
+                                     bpf_u_int32);
+    using setfilter_fn = int(__cdecl*)(pcap_t*, bpf_program*);
+    using freecode_fn = void(__cdecl*)(bpf_program*);
+    using loop_fn = int(__cdecl*)(pcap_t*, int, pcap_handler, u_char*);
+    using breakloop_fn = void(__cdecl*)(pcap_t*);
+    using close_fn = void(__cdecl*)(pcap_t*);
+    using geterr_fn = char*(__cdecl*)(pcap_t*);
+
+    bool EnsureLoaded();
+    const std::string& LastError() const { return last_error_; }
+    const std::string& RuntimePath() const { return runtime_path_; }
+
+    findalldevs_fn findalldevs{nullptr};
+    freealldevs_fn freealldevs{nullptr};
+    lookupdev_fn lookupdev{nullptr};
+    open_live_fn open_live{nullptr};
+    compile_fn compile{nullptr};
+    setfilter_fn setfilter{nullptr};
+    freecode_fn freecode{nullptr};
+    loop_fn loop{nullptr};
+    breakloop_fn breakloop{nullptr};
+    close_fn close{nullptr};
+    geterr_fn geterr{nullptr};
+
+private:
+    bool ResolveFunctions();
+
+#ifdef _WIN32
+    static std::vector<std::string> CandidateRuntimePaths();
+    static std::string LastWindowsError(DWORD error);
+    HMODULE module_{nullptr};
+#endif
+    bool tried_{false};
+    bool loaded_{false};
+    std::string runtime_path_;
+    std::string last_error_;
+};
+
+PcapApi& GetPcapApi() {
+    static PcapApi api;
+    return api;
+}
+
+template <typename Fn>
+bool ResolvePcapFunction(
+#ifdef _WIN32
+    HMODULE module,
+#endif
+    const char* name,
+    Fn& target,
+    std::string& error) {
+#ifdef _WIN32
+    target = reinterpret_cast<Fn>(GetProcAddress(module, name));
+    if (!target) {
+        error = std::string("missing pcap symbol: ") + name;
+        return false;
+    }
+    return true;
+#else
+    (void)name;
+    (void)target;
+    (void)error;
+    return false;
+#endif
+}
+
+bool PcapApi::ResolveFunctions() {
+    return ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_findalldevs", findalldevs, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_freealldevs", freealldevs, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_lookupdev", lookupdev, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_open_live", open_live, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_compile", compile, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_setfilter", setfilter, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_freecode", freecode, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_loop", loop, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_breakloop", breakloop, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_close", close, last_error_) &&
+           ResolvePcapFunction(
+#ifdef _WIN32
+               module_,
+#endif
+               "pcap_geterr", geterr, last_error_);
+}
+
+#ifdef _WIN32
+std::string PcapApi::LastWindowsError(DWORD error) {
+    if (error == 0) {
+        return {};
+    }
+    LPSTR buffer = nullptr;
+    const DWORD size = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        error,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&buffer),
+        0,
+        nullptr);
+    std::string message =
+        size != 0 && buffer ? std::string(buffer, size)
+                            : std::string("Win32 error ") +
+                                  std::to_string(error);
+    if (buffer) {
+        LocalFree(buffer);
+    }
+    while (!message.empty() &&
+           (message.back() == '\r' || message.back() == '\n' ||
+            message.back() == ' ')) {
+        message.pop_back();
+    }
+    return message;
+}
+
+std::vector<std::string> PcapApi::CandidateRuntimePaths() {
+    std::vector<std::string> paths;
+
+    std::array<char, MAX_PATH> windows_dir{};
+    const UINT len = GetWindowsDirectoryA(
+        windows_dir.data(), static_cast<UINT>(windows_dir.size()));
+    if (len > 0 && len < windows_dir.size()) {
+        std::string base = windows_dir.data();
+        if constexpr (sizeof(void*) == 8) {
+            paths.push_back(base + "\\System32\\Npcap\\wpcap.dll");
+        } else {
+            paths.push_back(base + "\\SysWOW64\\Npcap\\wpcap.dll");
+        }
+    }
+
+    // Fallback for developer machines that put wpcap.dll on PATH or beside
+    // the executable. The installed Npcap path above is preferred because
+    // app-local WinPcap-compatible DLLs can enumerate zero adapters.
+    paths.emplace_back("wpcap.dll");
+    return paths;
+}
+#endif
+
+bool PcapApi::EnsureLoaded() {
+    if (loaded_) {
+        return true;
+    }
+    if (tried_) {
+        return false;
+    }
+    tried_ = true;
+
+#ifdef _WIN32
+    std::string errors;
+    for (const std::string& path : CandidateRuntimePaths()) {
+        HMODULE module = nullptr;
+        if (path.find('\\') != std::string::npos ||
+            path.find('/') != std::string::npos) {
+            module = LoadLibraryExA(
+                path.c_str(),
+                nullptr,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+                    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        }
+        if (!module) {
+            module = LoadLibraryA(path.c_str());
+        }
+
+        if (!module) {
+            errors += path + ": " + LastWindowsError(GetLastError()) + "; ";
+            continue;
+        }
+
+        module_ = module;
+        runtime_path_ = path;
+        if (ResolveFunctions()) {
+            loaded_ = true;
+            LOG_INFO("Pcap runtime loaded from {}", runtime_path_);
+            return true;
+        }
+
+        errors += path + ": " + last_error_ + "; ";
+        FreeLibrary(module_);
+        module_ = nullptr;
+        runtime_path_.clear();
+    }
+    last_error_ = errors.empty() ? "failed to load wpcap.dll" : errors;
+    return false;
+#else
+    last_error_ = "dynamic pcap loading is only implemented on Windows";
+    return false;
+#endif
+}
 } // namespace
 
 // ── ctor / dtor ────────────────────────────────────────────────────
@@ -29,13 +273,23 @@ bool PcapPuller::Open(const std::string& url) {
         Close();
     }
 
+    PcapApi& api = GetPcapApi();
+    if (!api.EnsureLoaded()) {
+        LOG_ERROR("PcapPuller::Open failed to load pcap runtime: {}",
+                  api.LastError());
+        if (event_cb_) {
+            event_cb_(std::string("load pcap runtime: ") + api.LastError());
+        }
+        return false;
+    }
+
     const std::string device = ParseUrl(url);
     char errbuf[PCAP_ERRBUF_SIZE] = {0};
 
     // 默认网卡：尝试 pcap_lookupdev
     std::string dev_name = device;
     if (dev_name.empty() || dev_name == "default") {
-        const char* d = pcap_lookupdev(errbuf);
+        const char* d = api.lookupdev(errbuf);
         if (!d) {
             LOG_ERROR("PcapPuller::Open pcap_lookupdev failed: {}", errbuf);
             if (event_cb_) event_cb_(std::string("pcap_lookupdev: ") + errbuf);
@@ -44,11 +298,11 @@ bool PcapPuller::Open(const std::string& url) {
         dev_name = d;
     }
 
-    handler_ = pcap_open_live(dev_name.c_str(),
-                              kPcapSnapLen,
-                              promisc_ ? 1 : 0,
-                              kPcapTimeout,
-                              errbuf);
+    handler_ = api.open_live(dev_name.c_str(),
+                             kPcapSnapLen,
+                             promisc_ ? 1 : 0,
+                             kPcapTimeout,
+                             errbuf);
     if (!handler_) {
         LOG_ERROR("PcapPuller::Open pcap_open_live({}) failed: {}", dev_name, errbuf);
         if (event_cb_) event_cb_(std::string("pcap_open_live: ") + errbuf);
@@ -62,7 +316,7 @@ bool PcapPuller::Open(const std::string& url) {
 
     if (!ApplyBpfFilter()) {
         // 应用过滤器失败：关闭句柄并返回
-        pcap_close(handler_);
+        api.close(handler_);
         handler_ = nullptr;
         return false;
     }
@@ -87,7 +341,10 @@ void PcapPuller::Close() {
     running_.store(false);
 
     if (handler_) {
-        pcap_breakloop(handler_);
+        PcapApi& api = GetPcapApi();
+        if (api.EnsureLoaded()) {
+            api.breakloop(handler_);
+        }
     }
 
     {
@@ -100,7 +357,10 @@ void PcapPuller::Close() {
     }
 
     if (handler_) {
-        pcap_close(handler_);
+        PcapApi& api = GetPcapApi();
+        if (api.EnsureLoaded()) {
+            api.close(handler_);
+        }
         handler_ = nullptr;
     }
 
@@ -167,10 +427,17 @@ void PcapPuller::SetEventCallback(EventCallback cb) {
 
 std::vector<PcapPuller::DeviceInfo> PcapPuller::ListDevices() {
     std::vector<DeviceInfo> result;
+    PcapApi& api = GetPcapApi();
+    if (!api.EnsureLoaded()) {
+        LOG_ERROR("PcapPuller::ListDevices failed to load pcap runtime: {}",
+                  api.LastError());
+        return result;
+    }
+
     pcap_if_t* alldevs = nullptr;
     char errbuf[PCAP_ERRBUF_SIZE] = {0};
 
-    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+    if (api.findalldevs(&alldevs, errbuf) == -1) {
         LOG_ERROR("PcapPuller::ListDevices pcap_findalldevs failed: {}", errbuf);
         return result;
     }
@@ -182,7 +449,7 @@ std::vector<PcapPuller::DeviceInfo> PcapPuller::ListDevices() {
         result.push_back(std::move(info));
     }
 
-    pcap_freealldevs(alldevs);
+    api.freealldevs(alldevs);
     return result;
 }
 
@@ -208,31 +475,46 @@ bool PcapPuller::ApplyBpfFilter() {
     if (!handler_) {
         return false;
     }
+    PcapApi& api = GetPcapApi();
+    if (!api.EnsureLoaded()) {
+        LOG_ERROR("PcapPuller::ApplyBpfFilter pcap runtime unavailable: {}",
+                  api.LastError());
+        return false;
+    }
 
     bpf_program prog;
-    if (pcap_compile(handler_, &prog, bpf_filter_.c_str(), 1,
-                     PCAP_NETMASK_UNKNOWN) == -1) {
+    if (api.compile(handler_, &prog, bpf_filter_.c_str(), 1,
+                    PCAP_NETMASK_UNKNOWN) == -1) {
         LOG_ERROR("PcapPuller::ApplyBpfFilter pcap_compile(\"{}\") failed: {}",
-                  bpf_filter_, pcap_geterr(handler_));
+                  bpf_filter_, api.geterr(handler_));
         return false;
     }
 
-    if (pcap_setfilter(handler_, &prog) == -1) {
+    if (api.setfilter(handler_, &prog) == -1) {
         LOG_ERROR("PcapPuller::ApplyBpfFilter pcap_setfilter failed: {}",
-                  pcap_geterr(handler_));
-        pcap_freecode(&prog);
+                  api.geterr(handler_));
+        api.freecode(&prog);
         return false;
     }
 
-    pcap_freecode(&prog);
+    api.freecode(&prog);
     LOG_INFO("PcapPuller::ApplyBpfFilter applied: {}", bpf_filter_);
     return true;
 }
 
 void PcapPuller::CaptureLoop() {
     // pcap_loop 阻塞直到 pcap_breakloop 或出错
-    const int ret = pcap_loop(handler_, 0, &PcapPuller::Dispatch,
-                              reinterpret_cast<u_char*>(this));
+    PcapApi& api = GetPcapApi();
+    if (!api.EnsureLoaded()) {
+        LOG_ERROR("PcapPuller::CaptureLoop pcap runtime unavailable: {}",
+                  api.LastError());
+        stopped_.store(true);
+        queue_cv_.notify_all();
+        return;
+    }
+
+    const int ret = api.loop(handler_, 0, &PcapPuller::Dispatch,
+                             reinterpret_cast<u_char*>(this));
     LOG_INFO("PcapPuller::CaptureLoop exit, ret={} (dropped={})",
              ret, dropped_count_.load());
 
@@ -244,7 +526,7 @@ void PcapPuller::CaptureLoop() {
     }
 
     if (ret == -1 && event_cb_) {
-        event_cb_(std::string("pcap_loop error: ") + pcap_geterr(handler_));
+        event_cb_(std::string("pcap_loop error: ") + api.geterr(handler_));
     }
 }
 

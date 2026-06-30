@@ -3,31 +3,37 @@
 #include <QObject>
 #include <QImage>
 #include <QString>
+#include <QVector>
 
 #include <atomic>
-#include <cstdint>
 #include <memory>
 #include <thread>
 
 class FFmpegDecoder;
+class IPuller;
 class MediaFrame;
-class RtpUdpPuller;
 struct SwsContext;
 
-/// Owns the RTP receiver and decoder worker used by the Qt UI.
-class RtpPlayer : public QObject {
+/// Owns the AVTP/CVF receiver and decoder worker used by the Qt UI.
+class AvtpPlayer : public QObject {
     Q_OBJECT
 
 public:
-    explicit RtpPlayer(QObject* parent = nullptr);
-    ~RtpPlayer() override;
+    struct CaptureDevice {
+        QString name;
+        QString description;
+    };
 
-    bool Start(const QString& local_address, uint16_t local_port,
-               const QString& camera_address);
-    bool StartRtp(const QString& local_address, uint16_t local_port,
-                  const QString& camera_address);
+    explicit AvtpPlayer(QObject* parent = nullptr);
+    ~AvtpPlayer() override;
+
+    bool Start(const QString& device_name,
+               const QString& source_mac,
+               const QString& stream_id = QString());
     void Stop();
     bool IsRunning() const { return running_.load(); }
+
+    static QVector<CaptureDevice> ListCaptureDevices();
 
 signals:
     void FrameReady(const QImage& image);
@@ -36,9 +42,10 @@ signals:
 
 private:
     void Run();
+    void ReportStats();
     void ConvertAndPublishFrame(std::shared_ptr<MediaFrame> frame);
 
-    std::unique_ptr<RtpUdpPuller> puller_;
+    std::unique_ptr<IPuller> puller_;
     std::unique_ptr<FFmpegDecoder> decoder_;
     std::thread worker_;
     std::atomic<bool> running_{false};

@@ -8,6 +8,7 @@
 class QStackedWidget;
 class PageMenu;
 class RtpPlayerWidget;
+class AvtpPlayerWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -37,5 +38,7 @@ private:
 
     QStackedWidget* m_stackedWidget;
     RtpPlayerWidget* m_rtpPlayerWidget;
+    AvtpPlayerWidget* m_avtpPlayerWidget;
     QAction* m_rtpPlayerAction;
+    QAction* m_avtpPlayerAction;
 };
