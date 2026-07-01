@@ -196,6 +196,18 @@ bool AvtpPuller::ParseUrl(const std::string& url, Config& config,
             return false;
         }
     }
+    if (const auto it = values.find("format"); it != values.end()) {
+        if (it->second == "custom" || it->second == "0") {
+            parsed.format = PayloadFormat::Custom;
+        } else if (it->second == "standard" || it->second == "h264" || it->second == "1") {
+            parsed.format = PayloadFormat::Standard;
+        } else if (it->second == "auto") {
+            parsed.format = PayloadFormat::Auto;
+        } else {
+            error = "invalid format (use auto, standard, custom, h264, 0, or 1)";
+            return false;
+        }
+    }
 
     config = std::move(parsed);
     return true;
@@ -273,11 +285,14 @@ bool AvtpPuller::Open(const std::string& url) {
     stream_info_.fps = config_.fps;
 
     assembler_.Reset();
+    cater_cam_assembler_.Reset();
     raw_packets_ = 0;
     parsed_video_packets_ = 0;
     filtered_packets_ = 0;
     parse_errors_ = 0;
     access_units_ = 0;
+    cater_cam_packets_ = 0;
+    cater_cam_access_units_ = 0;
 
     pcap_puller_.SetStripEthernetHeader(false);
     pcap_puller_.SetBpfFilter(BuildBpfFilter(config_));
@@ -293,10 +308,12 @@ bool AvtpPuller::Open(const std::string& url) {
         return false;
     }
 
-    LOG_INFO("AVTP/CVF/H264 listening on {} src={} stream={}",
+    LOG_INFO("AVTP/CVF listening on {} src={} stream={} format={}",
              config_.device,
              config_.source_mac ? FormatMacAddress(*config_.source_mac) : "*",
-             config_.stream_id ? std::to_string(*config_.stream_id) : "*");
+             config_.stream_id ? std::to_string(*config_.stream_id) : "*",
+             config_.format == PayloadFormat::Custom ? "custom" :
+             config_.format == PayloadFormat::Standard ? "standard" : "auto");
     return true;
 }
 
@@ -327,6 +344,23 @@ std::shared_ptr<MediaPacket> AvtpPuller::MakeMediaPacket(
     packet->duration = 0;
     packet->time_base = Rational{1, 1000000};
     packet->keyframe = access_unit.keyframe;
+    packet->buffer =
+        std::make_shared<SimpleBuffer>(std::move(access_unit.data));
+    packet->backend = {};
+    return packet;
+}
+
+std::shared_ptr<MediaPacket> AvtpPuller::MakeMediaPacketFromCaterCam(
+    avtp::CaterCamAccessUnit access_unit) const {
+    auto packet = std::make_shared<MediaPacket>();
+    packet->type = MediaType::VIDEO;
+    packet->codec = CodecType::H264;
+    packet->stream_index = 0;
+    packet->pts = access_unit.capture_timestamp_us;
+    packet->dts = packet->pts;
+    packet->duration = 0;
+    packet->time_base = Rational{1, 1000000};
+    packet->keyframe = false; // Cater CAM payload is encrypted, cannot detect keyframe
     packet->buffer =
         std::make_shared<SimpleBuffer>(std::move(access_unit.data));
     packet->backend = {};
@@ -372,6 +406,41 @@ bool AvtpPuller::ReadPacket(std::shared_ptr<MediaPacket>& packet) {
         }
 
         ++parsed_video_packets_;
+
+        // Check if this is a Cater CAM packet (format_subtype=0x00)
+        if (cvf_packet.format_subtype == avtp::kCvfFormatSubtypeCustom) {
+            // Cater CAM format
+            if (config_.format == PayloadFormat::Standard) {
+                // User explicitly requested standard format, skip custom
+                ++filtered_packets_;
+                continue;
+            }
+
+            ++cater_cam_packets_;
+            avtp::CaterCamPacket cater_cam_packet;
+            if (!avtp::CaterCamParser::Parse(cvf_packet, cater_cam_packet)) {
+                ++parse_errors_;
+                continue;
+            }
+
+            avtp::CaterCamAccessUnit access_unit;
+            const auto result = cater_cam_assembler_.Push(
+                cater_cam_packet, raw_packet->pts, access_unit);
+            if (result == avtp::CaterCamAssembler::Result::AccessUnitReady) {
+                ++cater_cam_access_units_;
+                packet = MakeMediaPacketFromCaterCam(std::move(access_unit));
+                return true;
+            }
+            continue;
+        }
+
+        // Standard H.264 format (format_subtype=0x01)
+        if (config_.format == PayloadFormat::Custom) {
+            // User explicitly requested custom format, skip standard
+            ++filtered_packets_;
+            continue;
+        }
+
         avtp::H264AccessUnit access_unit;
         const auto result = assembler_.Push(
             cvf_packet, raw_packet->pts, access_unit);

@@ -10,7 +10,12 @@ constexpr uint16_t kEtherTypeAvtp = 0x22F0;
 constexpr uint8_t kSubtypeCvf = 0x03;
 constexpr uint8_t kCvfFormatRfc = 0x02;
 constexpr uint8_t kCvfFormatSubtypeH264 = 0x01;
+constexpr uint8_t kCvfFormatSubtypeCustom = 0x00;
 constexpr std::size_t kCvfHeaderSize = 24;
+
+// Custom payload format constants (我司CAM)
+constexpr uint32_t kCustomPayloadMagic = 0x415DA05A;
+constexpr std::size_t kCustomPayloadHeaderSize = 8; // 4-byte length + 4-byte magic
 
 using MacAddress = std::array<uint8_t, 6>;
 
@@ -50,6 +55,15 @@ struct ParsedCvfPacket {
 
     const uint8_t* payload{nullptr};
     std::size_t payload_size{0};
+
+    // Custom payload format fields (我司CAM)
+    bool is_custom_format{false};
+    uint32_t custom_payload_length{0};
+    uint32_t custom_magic{0};
+    uint32_t custom_rtp_timestamp{0};
+    uint32_t custom_ssrc{0};
+    const uint8_t* custom_rtp_payload{nullptr};
+    std::size_t custom_rtp_payload_size{0};
 };
 
 class AvtpPacketParser {

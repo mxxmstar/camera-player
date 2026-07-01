@@ -169,8 +169,14 @@ bool AvtpPacketParser::ParseCvfPdu(const uint8_t* data, std::size_t size,
     parsed.avtp_timestamp = ReadBe32(data + 12);
     parsed.format = data[16];
     parsed.format_subtype = data[17];
-    if (parsed.format != kCvfFormatRfc ||
-        parsed.format_subtype != kCvfFormatSubtypeH264) {
+    if (parsed.format != kCvfFormatRfc) {
+        SetError(error, ParseError::UnsupportedFormat);
+        return false;
+    }
+
+    // Support both standard H.264 (subtype 0x01) and custom format (subtype 0x00)
+    if (parsed.format_subtype != kCvfFormatSubtypeH264 &&
+        parsed.format_subtype != kCvfFormatSubtypeCustom) {
         SetError(error, ParseError::UnsupportedFormat);
         return false;
     }
@@ -188,6 +194,25 @@ bool AvtpPacketParser::ParseCvfPdu(const uint8_t* data, std::size_t size,
 
     parsed.payload = data + kCvfHeaderSize;
     parsed.payload_size = parsed.stream_data_length;
+
+    // Parse custom payload format (我司CAM)
+    if (parsed.format_subtype == kCvfFormatSubtypeCustom) {
+        parsed.is_custom_format = true;
+        if (parsed.payload_size >= kCustomPayloadHeaderSize) {
+            parsed.custom_payload_length = ReadBe32(parsed.payload);
+            parsed.custom_magic = ReadBe32(parsed.payload + 4);
+
+            // Parse embedded RTP-like header after the 8-byte custom header
+            if (parsed.payload_size >= kCustomPayloadHeaderSize + 12) {
+                const uint8_t* rtp_header = parsed.payload + kCustomPayloadHeaderSize;
+                parsed.custom_rtp_timestamp = ReadBe32(rtp_header + 4);
+                parsed.custom_ssrc = ReadBe32(rtp_header + 8);
+                parsed.custom_rtp_payload = rtp_header + 12;
+                parsed.custom_rtp_payload_size =
+                    parsed.payload_size - kCustomPayloadHeaderSize - 12;
+            }
+        }
+    }
 
     packet = parsed;
     SetError(error, ParseError::None);

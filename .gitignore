@@ -30,14 +30,16 @@ compile_commands.json
 # ============================================================
 .idea/
 .vscode/
+.vs/
 *.swp
 *.swo
 *~
-.vs/
 *.user
 *.suo
 .clangd/
 .cache/
+CMakeSettings.json
+cppproperties.json
 
 # ============================================================
 # OS
@@ -59,3 +61,6 @@ QT_StreamPlayer/
 !third_party/pcap/*.dll
 !third_party/pcap/*.lib
 *.pcapng
+
+*.pcap
+*.py

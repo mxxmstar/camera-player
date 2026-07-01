@@ -1,5 +1,6 @@
 #include "ui/main_window.h"
 #include "ui/avtp_player_widget.h"
+#include "ui/cater_avtp_player_widget.h"
 #include "ui/rtp_player_widget.h"
 #include "ui/page_menu.h"
 
@@ -36,6 +37,7 @@ void MainWindow::setupMenuBar()
 
     m_rtpPlayerAction = m_pageMenu->addAction(tr("RTP Player"));
     m_avtpPlayerAction = m_pageMenu->addAction(tr("AVTP Player"));
+    m_caterAvtpPlayerAction = m_pageMenu->addAction(tr("Cater AVTP Player"));
 }
 
 void MainWindow::setupToolBar()
@@ -76,6 +78,8 @@ void MainWindow::setupCentralWidget()
     m_stackedWidget->addWidget(m_rtpPlayerWidget);
     m_avtpPlayerWidget = new AvtpPlayerWidget(this);
     m_stackedWidget->addWidget(m_avtpPlayerWidget);
+    m_caterAvtpPlayerWidget = new CaterAvtpPlayerWidget(this);
+    m_stackedWidget->addWidget(m_caterAvtpPlayerWidget);
     setCentralWidget(m_stackedWidget);
 }
 
@@ -105,6 +109,8 @@ void MainWindow::setupConnections()
             this, [this]() { switchToPage(1); });
     connect(m_avtpPlayerAction, &QAction::triggered,
             this, [this]() { switchToPage(2); });
+    connect(m_caterAvtpPlayerAction, &QAction::triggered,
+            this, [this]() { switchToPage(3); });
 
     connect(m_pageMenu, &PageMenu::detachPageRequested,
             this, &MainWindow::detachPage);
@@ -134,6 +140,16 @@ void MainWindow::detachPage(QAction* action)
         window->resize(900, 600);
 
         auto* widget = new AvtpPlayerWidget(window);
+        window->setCentralWidget(widget);
+        window->setAttribute(Qt::WA_DeleteOnClose);
+        window->show();
+    } else if (action == m_caterAvtpPlayerAction) {
+        auto* window = new QMainWindow(this);
+        window->setWindowTitle(tr("Cater AVTP Player - Detached"));
+        window->setWindowIcon(QIcon(":/res/icon/logo.ico"));
+        window->resize(900, 600);
+
+        auto* widget = new CaterAvtpPlayerWidget(window);
         window->setCentralWidget(widget);
         window->setAttribute(Qt::WA_DeleteOnClose);
         window->show();
