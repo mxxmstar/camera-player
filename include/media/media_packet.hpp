@@ -11,6 +11,7 @@
 enum class MediaType {    
     VIDEO,            ///< 视频
     AUDIO,            ///< 音频
+    PCAP,             ///< pcap数据包
     UNKNOWN = 0,      ///< 未知
 };
 

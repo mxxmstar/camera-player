@@ -3,6 +3,9 @@
 #include <QWidget>
 #include <QImage>
 
+#include <memory>
+
+class MediaFrame;
 class QLineEdit;
 class QSpinBox;
 class QPushButton;
@@ -26,7 +29,7 @@ private:
     void updateVideoPixmap();
     void startRtpPlayer();
     void stopRtpPlayer();
-    void onVideoFrame(const QImage& image);
+    void onVideoFrame(std::shared_ptr<const MediaFrame> frame);
 
     QLineEdit* m_localAddressEdit;
     QSpinBox* m_portSpin;
@@ -36,5 +39,5 @@ private:
     QLabel* m_statusLabel;
     QLabel* m_videoLabel;
     QImage m_lastFrame;
-    RtpPlayer* m_rtpPlayer;
+    std::unique_ptr<RtpPlayer> m_rtpPlayer;
 };

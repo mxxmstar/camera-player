@@ -41,8 +41,7 @@ std::string DescribeNalTypes(const std::vector<uint8_t>& data) {
     return result.empty() ? "(none)" : result;
 }
 
-bool ParseUnsigned(const std::string& text, uint64_t maximum,
-                   uint64_t& value) {
+bool ParseUnsigned(const std::string& text, uint64_t maximum, uint64_t& value) {
     if (text.empty()) {
         return false;
     }

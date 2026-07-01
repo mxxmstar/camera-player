@@ -3,7 +3,10 @@
 #include <QImage>
 #include <QWidget>
 
+#include <memory>
+
 class AvtpPlayer;
+class MediaFrame;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -24,11 +27,12 @@ private:
     void setupUi();
     void setupConnections();
     void refreshCaptureDevices();
+    void captureBroadcastMac();
     void updateControlState();
     void updateVideoPixmap();
     void startAvtpPlayer();
     void stopAvtpPlayer();
-    void onVideoFrame(const QImage& image);
+    void onVideoFrame(std::shared_ptr<const MediaFrame> frame);
 
     QComboBox* m_captureDeviceCombo;
     QLineEdit* m_sourceMacEdit;
@@ -39,5 +43,5 @@ private:
     QLabel* m_statusLabel;
     QLabel* m_videoLabel;
     QImage m_lastFrame;
-    AvtpPlayer* m_avtpPlayer;
+    std::unique_ptr<AvtpPlayer> m_avtpPlayer;
 };

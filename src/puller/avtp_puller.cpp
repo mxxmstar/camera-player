@@ -357,7 +357,12 @@ bool AvtpPuller::ReadPacket(std::shared_ptr<MediaPacket>& packet) {
                 raw_packet->buffer->Size(),
                 cvf_packet,
                 &parse_error)) {
-            ++parse_errors_;
+            if (parse_error == avtp::ParseError::UnsupportedSubtype ||
+                parse_error == avtp::ParseError::UnsupportedFormat) {
+                ++filtered_packets_;
+            } else {
+                ++parse_errors_;
+            }
             continue;
         }
 

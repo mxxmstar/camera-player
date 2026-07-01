@@ -56,8 +56,9 @@ private:
     bool SameStream(const ParsedCvfPacket& packet) const;
     void SwitchStream(const ParsedCvfPacket& packet);
     Result DropCurrentAccessUnit(bool malformed);
-    H264AccessUnit FinishAccessUnit(const ParsedCvfPacket& packet,
-                                    int64_t capture_timestamp_us);
+    Result FinishAccessUnit(const ParsedCvfPacket& packet,
+                            int64_t capture_timestamp_us,
+                            H264AccessUnit& output);
 
     std::size_t max_access_unit_size_;
     std::vector<uint8_t> access_unit_;
@@ -70,6 +71,7 @@ private:
 
     std::vector<uint8_t> cached_sps_;
     std::vector<uint8_t> cached_pps_;
+    bool decoder_ready_{false};
     Stats stats_;
 };
 

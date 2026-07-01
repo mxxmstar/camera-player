@@ -5,13 +5,13 @@
 namespace rtp {
 namespace {
 
-constexpr uint8_t kNalTypeMask = 0x1FU;
-constexpr uint8_t kStapAType = 24;
-constexpr uint8_t kFuAType = 28;
-constexpr uint8_t kFuStartBit = 0x80U;
-constexpr uint8_t kFuEndBit = 0x40U;
-constexpr uint8_t kFuReservedBit = 0x20U;
-constexpr uint8_t kAnnexBStartCode[] = {0, 0, 0, 1};
+constexpr uint8_t kNalTypeMask = 0x1FU; ///< NAL 类型掩码
+constexpr uint8_t kStapAType = 24; ///< STAP-A NAL 类型
+constexpr uint8_t kFuAType = 28; ///< FU-A NAL 类型
+constexpr uint8_t kFuStartBit = 0x80U; ///< FU-A NAL 类型起始位
+constexpr uint8_t kFuEndBit = 0x40U; ///< FU-A NAL 类型结束位
+constexpr uint8_t kFuReservedBit = 0x20U; ///< FU-A NAL 类型保留位
+constexpr uint8_t kAnnexBStartCode[] = {0, 0, 0, 1}; ///< Annex B 起始码
 
 uint16_t ReadBigEndian16(const uint8_t* data) {
     return static_cast<uint16_t>(
@@ -76,6 +76,7 @@ void H264RtpDepacketizer::ResetAccessUnit() {
 void H264RtpDepacketizer::CacheParameterSetsFromAccessUnit() {
     const std::vector<uint8_t>& d = access_unit_;
     std::size_t i = 0;
+    // 起始码 00 00 00 01 或 00 00 01
     while (i + 3 <= d.size()) {
         std::size_t sc_len = 0;
         if (i + 4 <= d.size() && d[i] == 0 && d[i + 1] == 0 &&
@@ -87,23 +88,22 @@ void H264RtpDepacketizer::CacheParameterSetsFromAccessUnit() {
             ++i;
             continue;
         }
-
-        const std::size_t nal_start = i + sc_len;
+        
+        const std::size_t nal_start = i + sc_len;   // NALU 数据起始位置
         if (nal_start >= d.size()) {
-            break;
+            break;  // 无更多 NALU 数据
         }
-        const uint8_t nal_type = d[nal_start] & kNalTypeMask;
+        const uint8_t nal_type = d[nal_start] & kNalTypeMask;   // NALU 类型
 
-        // Scan to the next start code (or end of buffer). The loop must
-        // allow j to reach d.size() so a NAL at the very end is captured
-        // in full — using `j + 3 <= d.size()` here would truncate the
-        // trailing bytes when fewer than 3 bytes remain.
+        // 从 NALU 起始位置扫描到下一个起始码
         std::size_t j = nal_start + 1;
         while (j < d.size()) {
+            // 查找下一个 4 字节起始码
             if (j + 4 <= d.size() && d[j] == 0 && d[j + 1] == 0 &&
                 d[j + 2] == 0 && d[j + 3] == 1) {
                 break;
             }
+            // 查找下一个 3 字节起始码
             if (j + 3 <= d.size() && d[j] == 0 && d[j + 1] == 0 &&
                 d[j + 2] == 1) {
                 break;
@@ -150,8 +150,7 @@ bool H264RtpDepacketizer::PacketCanStartUnit(
            (packet.payload[1] & kFuStartBit) != 0;
 }
 
-H264RtpDepacketizer::Result H264RtpDepacketizer::DropCurrentTimestamp(
-    const ParsedRtpPacket& packet, bool malformed) {
+H264RtpDepacketizer::Result H264RtpDepacketizer::DropCurrentTimestamp(const ParsedRtpPacket& packet, bool malformed) {
     // Preserve any SPS/PPS accumulated so far, so they can be prepended
     // to a later keyframe if this access unit is discarded due to a gap.
     CacheParameterSetsFromAccessUnit();
@@ -172,19 +171,16 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::DropCurrentTimestamp(
     return malformed ? Result::Malformed : Result::Dropped;
 }
 
-H264RtpDepacketizer::Result H264RtpDepacketizer::HandleSingleNal(
-    const ParsedRtpPacket& packet) {
+H264RtpDepacketizer::Result H264RtpDepacketizer::HandleSingleNal(const ParsedRtpPacket& packet) {
     const uint8_t nal_type = packet.payload[0] & kNalTypeMask;
-    if (!AppendStartCode() ||
-        !Append(packet.payload, packet.payload_size)) {
+    if (!AppendStartCode() || !Append(packet.payload, packet.payload_size)) {
         return DropCurrentTimestamp(packet, true);
     }
     keyframe_ = keyframe_ || IsKeyNal(nal_type);
     return Result::NeedMore;
 }
 
-H264RtpDepacketizer::Result H264RtpDepacketizer::HandleStapA(
-    const ParsedRtpPacket& packet) {
+H264RtpDepacketizer::Result H264RtpDepacketizer::HandleStapA(const ParsedRtpPacket& packet) {
     std::size_t offset = 1;
     bool appended_nal = false;
     while (offset < packet.payload_size) {
@@ -214,8 +210,7 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::HandleStapA(
     return Result::NeedMore;
 }
 
-H264RtpDepacketizer::Result H264RtpDepacketizer::HandleFuA(
-    const ParsedRtpPacket& packet) {
+H264RtpDepacketizer::Result H264RtpDepacketizer::HandleFuA(const ParsedRtpPacket& packet) {
     if (packet.payload_size < 3) {
         return DropCurrentTimestamp(packet, true);
     }
@@ -279,8 +274,7 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::HandleFuA(
     return Result::NeedMore;
 }
 
-H264RtpDepacketizer::Result H264RtpDepacketizer::FinishIfMarked(
-    const ParsedRtpPacket& packet, H264AccessUnit& output) {
+H264RtpDepacketizer::Result H264RtpDepacketizer::FinishIfMarked(const ParsedRtpPacket& packet, H264AccessUnit& output) {
     if (!packet.marker) {
         return Result::NeedMore;
     }
@@ -328,8 +322,7 @@ H264RtpDepacketizer::Result H264RtpDepacketizer::FinishIfMarked(
     return Result::AccessUnitReady;
 }
 
-H264RtpDepacketizer::Result H264RtpDepacketizer::Push(
-    const ParsedRtpPacket& packet, H264AccessUnit& output) {
+H264RtpDepacketizer::Result H264RtpDepacketizer::Push(const ParsedRtpPacket& packet, H264AccessUnit& output) {
     output = {};
     ++stats_.packets;
 

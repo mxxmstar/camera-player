@@ -53,6 +53,7 @@ struct PcapApi {
     geterr_fn geterr{nullptr};
 
 private:
+    /// @brief 解析所有函数符号    
     bool ResolveFunctions();
 
 #ifdef _WIN32
@@ -71,6 +72,13 @@ PcapApi& GetPcapApi() {
     return api;
 }
 
+/// @brief 解析pcap函数指针
+/// @tparam Fn 函数指针类型
+/// @param module pcap模块句柄
+/// @param name 函数名
+/// @param[out] target 函数指针
+/// @param[out] error 错误信息
+/// @return 是否成功解析
 template <typename Fn>
 bool ResolvePcapFunction(
 #ifdef _WIN32
@@ -80,7 +88,8 @@ bool ResolvePcapFunction(
     Fn& target,
     std::string& error) {
 #ifdef _WIN32
-    target = reinterpret_cast<Fn>(GetProcAddress(module, name));
+    // 找到name对应的函数指针,并转换为正确的类型赋值给target引用
+    target = reinterpret_cast<Fn>(GetProcAddress(module, name));    // 从dll中获取函数指针
     if (!target) {
         error = std::string("missing pcap symbol: ") + name;
         return false;
@@ -530,8 +539,7 @@ void PcapPuller::CaptureLoop() {
     }
 }
 
-void PcapPuller::Dispatch(u_char* self, const struct pcap_pkthdr* h,
-                          const u_char* pkt) {
+void PcapPuller::Dispatch(u_char* self, const struct pcap_pkthdr* h, const u_char* pkt) {
     auto* p = reinterpret_cast<PcapPuller*>(self);
     p->HandlePacket(h, pkt);
 }
@@ -556,7 +564,7 @@ void PcapPuller::HandlePacket(const struct pcap_pkthdr* h, const u_char* pkt) {
 
     // 构造 MediaPacket（pcap 无明确编码，标 UNKNOWN；上层做协议解析）
     auto packet = std::make_shared<MediaPacket>();
-    packet->type         = MediaType::UNKNOWN;
+    packet->type         = MediaType::PCAP;
     packet->codec        = CodecType::UNKNOWN;
     packet->stream_index = 0;
     // 使用 pcap 时间戳（微秒）

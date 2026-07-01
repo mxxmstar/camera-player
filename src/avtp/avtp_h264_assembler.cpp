@@ -1,6 +1,7 @@
 #include "avtp/avtp_h264_assembler.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace avtp {
 namespace {
@@ -83,6 +84,7 @@ void AvtpH264Assembler::Reset() {
     dropping_until_marker_ = false;
     cached_sps_.clear();
     cached_pps_.clear();
+    decoder_ready_ = false;
     stats_ = {};
 }
 
@@ -125,6 +127,9 @@ void AvtpH264Assembler::SwitchStream(const ParsedCvfPacket& packet) {
     has_expected_sequence_ = false;
     expected_sequence_ = 0;
     dropping_until_marker_ = false;
+    cached_sps_.clear();
+    cached_pps_.clear();
+    decoder_ready_ = false;
     ResetAccessUnit();
 }
 
@@ -174,41 +179,55 @@ void AvtpH264Assembler::CacheParameterSetsFromAccessUnit(
     }
 }
 
-H264AccessUnit AvtpH264Assembler::FinishAccessUnit(
+AvtpH264Assembler::Result AvtpH264Assembler::FinishAccessUnit(
     const ParsedCvfPacket& packet,
-    int64_t capture_timestamp_us) {
-    H264AccessUnit output;
-    output.data = std::move(access_unit_);
-    output.stream_id = packet.stream_id;
-    output.source_mac = packet.has_ethernet_header ? packet.source_mac
-                                                   : ZeroMac();
-    output.sequence_num = packet.sequence_num;
-    output.avtp_timestamp = packet.avtp_timestamp;
-    output.timestamp_valid = packet.timestamp_valid;
-    output.capture_timestamp_us = capture_timestamp_us;
+    int64_t capture_timestamp_us,
+    H264AccessUnit& output) {
+    H264AccessUnit candidate;
+    candidate.data = std::move(access_unit_);
+    candidate.stream_id = packet.stream_id;
+    candidate.source_mac = packet.has_ethernet_header ? packet.source_mac
+                                                      : ZeroMac();
+    candidate.sequence_num = packet.sequence_num;
+    candidate.avtp_timestamp = packet.avtp_timestamp;
+    candidate.timestamp_valid = packet.timestamp_valid;
+    candidate.capture_timestamp_us = capture_timestamp_us;
 
-    CacheParameterSetsFromAccessUnit(output.data);
-    output.keyframe = ContainsNalType(output.data, kNalTypeIdr);
+    CacheParameterSetsFromAccessUnit(candidate.data);
+    candidate.keyframe = ContainsNalType(candidate.data, kNalTypeIdr);
+    bool has_sps = ContainsNalType(candidate.data, kNalTypeSps);
+    bool has_pps = ContainsNalType(candidate.data, kNalTypePps);
 
-    if (output.keyframe) {
+    if (candidate.keyframe) {
         std::vector<uint8_t> prefix;
-        if (!cached_sps_.empty() &&
-            !ContainsNalType(output.data, kNalTypeSps)) {
+        if (!cached_sps_.empty() && !has_sps) {
             AppendStartCodeAndNal(prefix, cached_sps_);
+            has_sps = true;
         }
-        if (!cached_pps_.empty() &&
-            !ContainsNalType(output.data, kNalTypePps)) {
+        if (!cached_pps_.empty() && !has_pps) {
             AppendStartCodeAndNal(prefix, cached_pps_);
+            has_pps = true;
         }
         if (!prefix.empty()) {
-            output.data.insert(output.data.begin(),
-                               prefix.begin(), prefix.end());
+            candidate.data.insert(candidate.data.begin(),
+                                  prefix.begin(), prefix.end());
         }
+    }
+
+    if (!decoder_ready_) {
+        if (!candidate.keyframe || !has_sps || !has_pps) {
+            ++stats_.dropped_access_units;
+            ResetAccessUnit();
+            output = {};
+            return Result::Dropped;
+        }
+        decoder_ready_ = true;
     }
 
     ++stats_.access_units;
     ResetAccessUnit();
-    return output;
+    output = std::move(candidate);
+    return Result::AccessUnitReady;
 }
 
 AvtpH264Assembler::Result AvtpH264Assembler::Push(
@@ -275,8 +294,7 @@ AvtpH264Assembler::Result AvtpH264Assembler::Push(
         return Result::NeedMore;
     }
 
-    output = FinishAccessUnit(packet, capture_timestamp_us);
-    return Result::AccessUnitReady;
+    return FinishAccessUnit(packet, capture_timestamp_us, output);
 }
 
 } // namespace avtp

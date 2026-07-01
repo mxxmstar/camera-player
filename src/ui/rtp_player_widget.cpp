@@ -1,4 +1,6 @@
 #include "ui/rtp_player_widget.h"
+
+#include "media/media_frame.hpp"
 #include "player/rtp_player.h"
 
 #include <QHBoxLayout>
@@ -7,8 +9,12 @@
 #include <QSpinBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QMetaObject>
 #include <QPixmap>
 #include <QResizeEvent>
+
+#include <string>
+#include <utility>
 
 RtpPlayerWidget::RtpPlayerWidget(QWidget* parent)
     : QWidget(parent)
@@ -68,7 +74,7 @@ void RtpPlayerWidget::setupUi()
     rootLayout->addWidget(m_statusLabel);
     rootLayout->addWidget(m_videoLabel, 1);
 
-    m_rtpPlayer = new RtpPlayer(this);
+    m_rtpPlayer = std::make_unique<RtpPlayer>();
 }
 
 void RtpPlayerWidget::setupConnections()
@@ -77,24 +83,40 @@ void RtpPlayerWidget::setupConnections()
             this, &RtpPlayerWidget::startRtpPlayer);
     connect(m_stopButton, &QPushButton::clicked,
             this, &RtpPlayerWidget::stopRtpPlayer);
-    connect(m_rtpPlayer, &RtpPlayer::FrameReady,
-            this, &RtpPlayerWidget::onVideoFrame);
-    connect(m_rtpPlayer, &RtpPlayer::StateChanged,
-            this, [this](const QString& state) {
-                m_statusLabel->setText(state);
-            });
-    connect(m_rtpPlayer, &RtpPlayer::ErrorOccurred,
-            this, [this](const QString& error) {
-                m_statusLabel->setText(tr("Error: %1").arg(error));
-            });
+    m_rtpPlayer->SetFrameCallback(
+        [this](std::shared_ptr<const MediaFrame> frame) {
+            QMetaObject::invokeMethod(
+                this,
+                [this, frame = std::move(frame)]() {
+                    onVideoFrame(frame);
+                },
+                Qt::QueuedConnection);
+        });
+    m_rtpPlayer->SetStateCallback([this](const std::string& state) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, state]() {
+                m_statusLabel->setText(QString::fromStdString(state));
+            },
+            Qt::QueuedConnection);
+    });
+    m_rtpPlayer->SetErrorCallback([this](const std::string& error) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, error]() {
+                m_statusLabel->setText(
+                    tr("Error: %1").arg(QString::fromStdString(error)));
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 void RtpPlayerWidget::startRtpPlayer()
 {
     if (m_rtpPlayer->Start(
-            m_localAddressEdit->text().trimmed(),
+            m_localAddressEdit->text().trimmed().toStdString(),
             static_cast<uint16_t>(m_portSpin->value()),
-            m_cameraAddressEdit->text().trimmed())) {
+            m_cameraAddressEdit->text().trimmed().toStdString())) {
         m_startButton->setEnabled(false);
         m_stopButton->setEnabled(true);
         m_localAddressEdit->setEnabled(false);
@@ -113,12 +135,30 @@ void RtpPlayerWidget::stopRtpPlayer()
     m_cameraAddressEdit->setEnabled(true);
 }
 
-void RtpPlayerWidget::onVideoFrame(const QImage& image)
+void RtpPlayerWidget::onVideoFrame(std::shared_ptr<const MediaFrame> frame)
 {
-    m_lastFrame = image;
+    if (!frame || !frame->buffer ||
+        frame->pixel_format != PixelFormat::kRGB24 ||
+        frame->width <= 0 || frame->height <= 0) {
+        return;
+    }
+
+    const int stride =
+        frame->stride[0] > 0 ? frame->stride[0] : frame->width * 3;
+    QImage image(
+        frame->buffer->Data(),
+        frame->width,
+        frame->height,
+        stride,
+        QImage::Format_RGB888);
+    if (image.isNull()) {
+        return;
+    }
+
+    m_lastFrame = image.copy();
     updateVideoPixmap();
     m_statusLabel->setText(
-        tr("Playing %1x%2").arg(image.width()).arg(image.height()));
+        tr("Playing %1x%2").arg(frame->width).arg(frame->height));
 }
 
 void RtpPlayerWidget::updateVideoPixmap()

@@ -3,13 +3,19 @@
 namespace rtp {
 namespace {
 
-uint16_t ReadBigEndian16(const uint8_t* data) {
+    /// @brief 从大端字节序读取16位无符号整数
+    /// @param data 输入数据指针
+    /// @return 读取到的16位无符号整数
+    uint16_t ReadBigEndian16(const uint8_t* data) {
     return static_cast<uint16_t>(
         (static_cast<uint16_t>(data[0]) << 8) |
         static_cast<uint16_t>(data[1]));
 }
 
-uint32_t ReadBigEndian32(const uint8_t* data) {
+    /// @brief 从大端字节序读取32位无符号整数
+    /// @param data 输入数据指针
+    /// @return 读取到的32位无符号整数
+    uint32_t ReadBigEndian32(const uint8_t* data) {
     return (static_cast<uint32_t>(data[0]) << 24) |
            (static_cast<uint32_t>(data[1]) << 16) |
            (static_cast<uint32_t>(data[2]) << 8) |
@@ -18,8 +24,7 @@ uint32_t ReadBigEndian32(const uint8_t* data) {
 
 } // namespace
 
-bool RtpPacketParser::Parse(const uint8_t* data, std::size_t size,
-                            ParsedRtpPacket& packet) {
+bool RtpPacketParser::Parse(const uint8_t* data, std::size_t size, ParsedRtpPacket& packet) {
     packet = {};
     if (!data || size < 12) {
         return false;

@@ -69,6 +69,13 @@ std::vector<uint8_t> WrapEthernet(const std::vector<uint8_t>& pdu,
     return frame;
 }
 
+std::vector<uint8_t> DecodableKeyframePayload() {
+    return {
+        0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x28,
+        0, 0, 0, 1, 0x68, 0xce,
+        0, 0, 0, 1, 0x65, 0xaa, 0xbb};
+}
+
 avtp::ParsedCvfPacket ParseFrame(const std::vector<uint8_t>& frame) {
     avtp::ParsedCvfPacket packet;
     avtp::ParseError error = avtp::ParseError::None;
@@ -135,6 +142,18 @@ void TestParserRejectsTruncatedStreamData() {
             "truncated stream data error");
 }
 
+void TestParserRejectsUnsupportedSubtype() {
+    auto pdu = BuildCvfPayload(1, false, {0, 0, 0, 1, 0x65});
+    pdu[0] = 0x02;
+    avtp::ParsedCvfPacket packet;
+    avtp::ParseError error = avtp::ParseError::None;
+    Require(!avtp::AvtpPacketParser::ParseCvfPdu(
+                pdu.data(), pdu.size(), packet, &error),
+            "unsupported subtype rejected");
+    Require(error == avtp::ParseError::UnsupportedSubtype,
+            "unsupported subtype error");
+}
+
 void TestAssemblerBuildsAccessUnit() {
     avtp::AvtpH264Assembler assembler;
     avtp::H264AccessUnit output;
@@ -171,12 +190,18 @@ void TestAssemblerSequenceWrap() {
     avtp::AvtpH264Assembler assembler;
     avtp::H264AccessUnit output;
 
+    auto prime_frame = WrapEthernet(BuildCvfPayload(
+        254, true, DecodableKeyframePayload()));
     auto first_frame = WrapEthernet(BuildCvfPayload(
         255, false, {0, 0, 0, 1, 0x41, 0x01}));
     auto second_frame = WrapEthernet(BuildCvfPayload(
         0, true, {0x02, 0x03}));
+    auto prime = ParseFrame(prime_frame);
     auto first = ParseFrame(first_frame);
     auto second = ParseFrame(second_frame);
+    Require(assembler.Push(prime, 0, output) ==
+                avtp::AvtpH264Assembler::Result::AccessUnitReady,
+            "wrap prime decoder");
     Require(assembler.Push(first, 1, output) ==
                 avtp::AvtpH264Assembler::Result::NeedMore,
             "wrap first");
@@ -190,16 +215,22 @@ void TestAssemblerGapDropsOnlyCorruptAccessUnit() {
     avtp::AvtpH264Assembler assembler;
     avtp::H264AccessUnit output;
 
+    auto prime_frame = WrapEthernet(BuildCvfPayload(
+        0, true, DecodableKeyframePayload()));
     auto first_frame = WrapEthernet(BuildCvfPayload(
         1, false, {0, 0, 0, 1, 0x41, 0x11}));
     auto gap_tail_frame = WrapEthernet(BuildCvfPayload(
         3, true, {0x22, 0x33}));
     auto recovered_frame = WrapEthernet(BuildCvfPayload(
-        4, true, {0, 0, 0, 1, 0x65, 0xaa}));
+        4, true, {0, 0, 0, 1, 0x41, 0xaa}));
+    auto prime = ParseFrame(prime_frame);
     auto first = ParseFrame(first_frame);
     auto gap_tail = ParseFrame(gap_tail_frame);
     auto recovered = ParseFrame(recovered_frame);
 
+    Require(assembler.Push(prime, 0, output) ==
+                avtp::AvtpH264Assembler::Result::AccessUnitReady,
+            "gap prime decoder");
     Require(assembler.Push(first, 1, output) ==
                 avtp::AvtpH264Assembler::Result::NeedMore,
             "gap first");
@@ -209,7 +240,7 @@ void TestAssemblerGapDropsOnlyCorruptAccessUnit() {
     Require(assembler.Push(recovered, 3, output) ==
                 avtp::AvtpH264Assembler::Result::AccessUnitReady,
             "recovers after marker");
-    Require(output.keyframe, "recovered keyframe");
+    Require(!output.keyframe, "recovered inter frame");
     Require(assembler.GetStats().lost_packets == 1, "lost packet count");
     Require(assembler.GetStats().dropped_access_units == 1,
             "dropped AU count");
@@ -224,7 +255,7 @@ void TestAssemblerWaitsForAnnexBStart() {
     auto tail_frame = WrapEthernet(BuildCvfPayload(
         2, true, {0x78, 0x9a}));
     auto recovered_frame = WrapEthernet(BuildCvfPayload(
-        3, true, {0, 0, 0, 1, 0x41, 0x01}));
+        3, true, DecodableKeyframePayload()));
     auto middle = ParseFrame(middle_frame);
     auto tail = ParseFrame(tail_frame);
     auto recovered = ParseFrame(recovered_frame);
@@ -238,8 +269,39 @@ void TestAssemblerWaitsForAnnexBStart() {
     Require(assembler.Push(recovered, 3, output) ==
                 avtp::AvtpH264Assembler::Result::AccessUnitReady,
             "recovers on next start code");
+    Require(output.keyframe, "recovered starts with decodable keyframe");
     Require(assembler.GetStats().waiting_for_start_packets == 1,
             "waiting for start count");
+}
+
+void TestAssemblerDropsUntilParameterSets() {
+    avtp::AvtpH264Assembler assembler;
+    avtp::H264AccessUnit output;
+
+    auto p_frame_data = WrapEthernet(BuildCvfPayload(
+        1, true, {0, 0, 0, 1, 0x41, 0x01}));
+    auto idr_without_params_data = WrapEthernet(BuildCvfPayload(
+        2, true, {0, 0, 0, 1, 0x65, 0xaa}));
+    auto decodable_idr_data = WrapEthernet(BuildCvfPayload(
+        3, true, DecodableKeyframePayload()));
+    auto p_frame = ParseFrame(p_frame_data);
+    auto idr_without_params = ParseFrame(idr_without_params_data);
+    auto decodable_idr = ParseFrame(decodable_idr_data);
+
+    Require(assembler.Push(p_frame, 1, output) ==
+                avtp::AvtpH264Assembler::Result::Dropped,
+            "initial P frame dropped before decoder ready");
+    Require(assembler.Push(idr_without_params, 2, output) ==
+                avtp::AvtpH264Assembler::Result::Dropped,
+            "IDR without SPS/PPS dropped before decoder ready");
+    Require(assembler.Push(decodable_idr, 3, output) ==
+                avtp::AvtpH264Assembler::Result::AccessUnitReady,
+            "decodable IDR opens stream");
+    Require(output.keyframe, "first output is keyframe");
+    Require(assembler.GetStats().access_units == 1,
+            "only decodable AU emitted");
+    Require(assembler.GetStats().dropped_access_units == 2,
+            "undecodable startup AUs dropped");
 }
 
 void TestAssemblerOversizeProtection() {
@@ -262,10 +324,12 @@ int main() {
     TestParserPreservesFullStreamData();
     TestParserVlanAndMarker();
     TestParserRejectsTruncatedStreamData();
+    TestParserRejectsUnsupportedSubtype();
     TestAssemblerBuildsAccessUnit();
     TestAssemblerSequenceWrap();
     TestAssemblerGapDropsOnlyCorruptAccessUnit();
     TestAssemblerWaitsForAnnexBStart();
+    TestAssemblerDropsUntilParameterSets();
     TestAssemblerOversizeProtection();
     std::cout << "All AVTP protocol tests passed.\n";
     return 0;

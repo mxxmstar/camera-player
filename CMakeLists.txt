@@ -49,23 +49,12 @@ set(GLAD_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/third_party/glad/include)
 set(GLAD_SOURCE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
 
 # ============================================================
-# libpcap / Npcap (prebuilt static import libraries)
+# libpcap / Npcap headers and runtime discovery
 # 仅当 ENABLE_PCAP=ON 时启用，提供 PcapPuller 的网卡抓包能力
 # ============================================================
 if(ENABLE_PCAP)
     set(PCAP_ROOT ${CMAKE_SOURCE_DIR}/third_party/pcap)
     set(PCAP_INCLUDE_DIR ${PCAP_ROOT}/Include)
-    if(MSVC)
-        set(PCAP_LIBRARIES
-            ${PCAP_ROOT}/Packet.lib
-            ${PCAP_ROOT}/wpcap.lib
-        )
-    else()
-        set(PCAP_LIBRARIES
-            ${PCAP_ROOT}/wpcap.lib
-            ${PCAP_ROOT}/Packet.lib
-        )
-    endif()
 
     if(WIN32)
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -210,10 +199,9 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE ${FFMPEG_LIBRARIES})
     target_link_libraries(${PROJECT_NAME} PRIVATE ${QT6_LIBRARIES})
 
-    # pcap 链接库（仅 ENABLE_PCAP=ON 时）
-    if(ENABLE_PCAP)
-        target_link_libraries(${PROJECT_NAME} PRIVATE ${PCAP_LIBRARIES})
-    endif()
+    # PcapPuller resolves Npcap symbols with LoadLibrary/GetProcAddress.
+    # Do not link wpcap.lib/Packet.lib here; that would add a load-time
+    # dependency on wpcap.dll before the explicit system-runtime loader runs.
 
     # 可选链接 bcmtool（仅在 third_party/bcmtool 存在时）
     if(BCMTOOL_ENABLED)
@@ -353,9 +341,6 @@ if(BUILD_TESTS)
             target_link_libraries(${PROJECT_NAME}_tests PRIVATE opengl32 ${GLFW3_LIBRARY})
             target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${FFMPEG_LIBRARIES})
             target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${QT6_LIBRARIES})
-            if(ENABLE_PCAP)
-                target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${PCAP_LIBRARIES})
-            endif()
             if(BCMTOOL_ENABLED)
                 target_link_libraries(${PROJECT_NAME}_tests PRIVATE bcmtool)
             endif()

@@ -1,46 +1,66 @@
 #pragma once
 
-#include <QObject>
-#include <QImage>
-#include <QString>
-
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
-#include <thread>
+#include <mutex>
+#include <string>
 
 class FFmpegDecoder;
 class MediaFrame;
+class MediaPacket;
 class RtpUdpPuller;
+class StreamSession;
 struct SwsContext;
 
-/// Owns the RTP receiver and decoder worker used by the Qt UI.
-class RtpPlayer : public QObject {
-    Q_OBJECT
-
+/// Owns the RTP receiver and decoder worker.
+class RtpPlayer {
 public:
-    explicit RtpPlayer(QObject* parent = nullptr);
-    ~RtpPlayer() override;
+    using FrameCallback = std::function<void(std::shared_ptr<const MediaFrame>)>;
+    using MessageCallback = std::function<void(const std::string&)>;
 
-    bool Start(const QString& local_address, uint16_t local_port,
-               const QString& camera_address);
-    bool StartRtp(const QString& local_address, uint16_t local_port,
-                  const QString& camera_address);
+    RtpPlayer();
+    ~RtpPlayer();
+
+    RtpPlayer(const RtpPlayer&) = delete;
+    RtpPlayer& operator=(const RtpPlayer&) = delete;
+
+    bool Start(const std::string& local_address, uint16_t local_port,
+               const std::string& camera_address);
+    bool StartRtp(const std::string& local_address, uint16_t local_port,
+                  const std::string& camera_address);
     void Stop();
     bool IsRunning() const { return running_.load(); }
 
-signals:
-    void FrameReady(const QImage& image);
-    void StateChanged(const QString& state);
-    void ErrorOccurred(const QString& error);
+    void SetFrameCallback(FrameCallback callback);
+    void SetStateCallback(MessageCallback callback);
+    void SetErrorCallback(MessageCallback callback);
 
 private:
-    void Run();
-    void ConvertAndPublishFrame(std::shared_ptr<MediaFrame> frame);
+    struct Runtime;
 
-    std::unique_ptr<RtpUdpPuller> puller_;
+    bool StartOnIo(const std::string& local_address, uint16_t local_port,
+                   const std::string& camera_address);
+    void StopOnIo();
+    void HandlePacket(std::shared_ptr<MediaPacket> packet);
+    void ReportStats();
+    void ConvertAndPublishFrame(std::shared_ptr<MediaFrame> frame);
+    void PublishFrame(std::shared_ptr<const MediaFrame> frame);
+    void PublishState(const std::string& state);
+    void PublishError(const std::string& error);
+
+    std::unique_ptr<Runtime> runtime_;
+    std::shared_ptr<StreamSession> session_;
+    RtpUdpPuller* rtp_puller_{nullptr};
     std::unique_ptr<FFmpegDecoder> decoder_;
-    std::thread worker_;
     std::atomic<bool> running_{false};
+    std::chrono::steady_clock::time_point last_report_{};
     SwsContext* sws_context_{nullptr};
+
+    mutable std::mutex callback_mutex_;
+    FrameCallback frame_callback_;
+    MessageCallback state_callback_;
+    MessageCallback error_callback_;
 };
