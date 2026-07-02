@@ -24,6 +24,7 @@ enum class CodecType : int {
     G711A   = 7,
     G711U   = 8,
     OPUS    = 31,
+    JPEG    = 26,  // JPEG/MJPEG
 };
 
 /// 后端引擎句柄，用于传递特定引擎的内部对象指针

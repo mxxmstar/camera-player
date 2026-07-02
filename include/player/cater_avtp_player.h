@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-class FFmpegDecoder;
+class JpegDecoder;
 class IPuller;
 class MediaFrame;
 class MediaPacket;
@@ -62,7 +62,7 @@ private:
     std::unique_ptr<Runtime> runtime_;
     std::shared_ptr<StreamSession> session_;
     IPuller* puller_{nullptr};
-    std::unique_ptr<FFmpegDecoder> decoder_;
+    std::unique_ptr<JpegDecoder> decoder_;
     std::atomic<bool> running_{false};
     std::chrono::steady_clock::time_point last_report_{};
     SwsContext* sws_context_{nullptr};

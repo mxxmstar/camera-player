@@ -14,6 +14,13 @@ if(MSVC)
     string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
     string(REPLACE "/ZI" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}" CACHE STRING "Debug flags" FORCE)
+
+    # App-local deployment for the MSVC runtime. Release packages are copied
+    # to machines without Visual Studio installed, so keep the required VC
+    # Redistributable DLLs beside camera-player.exe.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    set(MSVC_RUNTIME_DLLS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS})
 endif()
 
 # ============================================================
@@ -21,6 +28,26 @@ endif()
 # ============================================================
 option(BUILD_TESTS "Build test programs" OFF)
 option(ENABLE_PCAP "Enable pcap network capture support (PcapPuller)" ON)
+
+# ============================================================
+# 构建类型与输出目录
+# 默认 Debug；Release 产物（exe + 依赖 DLL + Qt 插件）输出到源码根目录 bin/
+# Debug 产物保持默认输出（build/<Config>/）
+# ============================================================
+if(CMAKE_CONFIGURATION_TYPES)
+    # 多配置生成器（Visual Studio）：确保 Debug/Release 均可用
+    set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "" FORCE)
+    # Release 输出到源码根目录 bin/，Debug 保持默认（build/Debug/）
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/bin)
+else()
+    # 单配置生成器（Ninja/Make）：默认 Debug
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type (Debug/Release)" FORCE)
+    endif()
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+    endif()
+endif()
 
 # ============================================================
 # ASIO (header-only)
@@ -221,6 +248,7 @@ if(WIN32)
         ${FFMPEG_ROOT}/bin/avdevice-62.dll
     )
 
+    # Qt6 运行时 DLL（release + debug 版本均复制，保证两种配置均可直接运行）
     set(QT6_DLLS
         ${QT6_ROOT}/bin/Qt6Core.dll
         ${QT6_ROOT}/bin/Qt6Cored.dll
@@ -233,6 +261,11 @@ if(WIN32)
         ${QT6_ROOT}/bin/Qt6OpenGL.dll
         ${QT6_ROOT}/bin/Qt6OpenGLd.dll
     )
+
+    if(MSVC AND NOT MSVC_RUNTIME_DLLS)
+        message(WARNING "MSVC runtime DLLs were not found; Release bin may "
+                        "require vc_redist.x64.exe on target machines.")
+    endif()
 
     # PcapPuller loads the installed Npcap runtime explicitly from
     # %WINDIR%/System32/Npcap at run time. Do not keep app-local pcap DLLs
@@ -257,11 +290,24 @@ if(WIN32)
         endif()
     endforeach()
 
+    # 复制 Qt6 运行时 DLL 到产物输出目录
     foreach(dll ${QT6_DLLS})
         if(EXISTS ${dll})
             add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${dll}
+                $<TARGET_FILE_DIR:${PROJECT_NAME}>
+            )
+        endif()
+    endforeach()
+
+    # Copy the release VC runtime DLLs resolved by CMake from the Visual Studio
+    # Redist directory. This makes bin/ usable on machines without VS installed.
+    foreach(dll ${MSVC_RUNTIME_DLLS})
+        if(EXISTS "${dll}")
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${dll}"
                 $<TARGET_FILE_DIR:${PROJECT_NAME}>
             )
         endif()

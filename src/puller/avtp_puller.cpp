@@ -278,7 +278,10 @@ bool AvtpPuller::Open(const std::string& url) {
     config_ = std::move(parsed);
 
     stream_info_.media_type = MediaType::VIDEO;
-    stream_info_.codec_type = CodecType::H264;
+    // Custom format (卡特CAM) uses JPEG/MJPEG, standard format uses H.264
+    stream_info_.codec_type = (config_.format == PayloadFormat::Custom)
+                                  ? CodecType::JPEG
+                                  : CodecType::H264;
     stream_info_.stream_index = 0;
     stream_info_.width = config_.width;
     stream_info_.height = config_.height;

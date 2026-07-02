@@ -34,6 +34,7 @@ bool FFmpegDecoder::Open(const StreamInfo& info) {
         case CodecType::H265: codec_id = AV_CODEC_ID_HEVC; break;
         case CodecType::AAC:  codec_id = AV_CODEC_ID_AAC;  break;
         case CodecType::OPUS: codec_id = AV_CODEC_ID_OPUS; break;
+        case CodecType::JPEG: codec_id = AV_CODEC_ID_MJPEG; break;
         default:
             LOG_ERROR("FFmpegDecoder:Open: unsupported codec type {}",
                       static_cast<int>(info.codec_type));

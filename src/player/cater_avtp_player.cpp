@@ -1,6 +1,6 @@
 #include "player/cater_avtp_player.h"
 
-#include "decoder/ffmpeg_decoder.hpp"
+#include "decoder/jpeg_decoder.hpp"
 #include "log/logger.h"
 #include "media/media_frame.hpp"
 #include "media/simple_buffer.hpp"
@@ -51,7 +51,7 @@ struct CaterAvtpPlayer::Runtime {
 
 CaterAvtpPlayer::CaterAvtpPlayer()
     : runtime_(std::make_unique<Runtime>()),
-      decoder_(std::make_unique<FFmpegDecoder>()) {
+      decoder_(std::make_unique<JpegDecoder>()) {
 }
 
 CaterAvtpPlayer::~CaterAvtpPlayer() {
@@ -138,7 +138,7 @@ bool CaterAvtpPlayer::StartOnIo(const std::string& device_name,
         });
         *decoder_opened = decoder_->Open(info);
         if (!*decoder_opened) {
-            PublishError("无法打开 FFmpeg H.264 解码器");
+            PublishError("无法打开 JPEG 解码器");
             decoder_->SetFrameCallback({});
         }
     });
