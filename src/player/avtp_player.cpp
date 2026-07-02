@@ -39,6 +39,19 @@ std::string Trim(std::string value) {
     return value;
 }
 
+const char* CodecName(CodecType codec) {
+    switch (codec) {
+        case CodecType::H264:
+            return "H264";
+        case CodecType::H265:
+            return "H265";
+        case CodecType::JPEG:
+            return "JPEG";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 }  // namespace
 
 struct AvtpPlayer::Runtime {
@@ -129,27 +142,16 @@ bool AvtpPlayer::StartOnIo(const std::string& device_name,
         }
     });
 
-    auto decoder_opened = std::make_shared<bool>(false);
-    session_->SetStreamInfoCallback([this, decoder_opened](
-                                        const StreamInfo& info) {
-        decoder_->SetFrameCallback([this](std::shared_ptr<MediaFrame> frame) {
-            ConvertAndPublishFrame(std::move(frame));
-        });
-        *decoder_opened = decoder_->Open(info);
-        if (!*decoder_opened) {
-            PublishError("无法打开 FFmpeg H.264 解码器");
-            decoder_->SetFrameCallback({});
-        }
-    });
+    session_->SetStreamInfoCallback([](const StreamInfo&) {});
 
-    if (!session_->Start() || !*decoder_opened) {
+    if (!session_->Start()) {
         StopOnIo();
         return false;
     }
 
     running_ = true;
     last_report_ = std::chrono::steady_clock::now();
-    PublishState("监听中，等待摄像头 AVTP/CVF");
+    PublishState("监听中，等待摄像头 AVTP");
     return true;
 #else
     (void)device_name;
@@ -173,6 +175,7 @@ void AvtpPlayer::StopOnIo() {
         decoder_->SetFrameCallback({});
         decoder_->Close();
     }
+    decoder_codec_ = CodecType::UNKNOWN;
     if (sws_context_) {
         sws_freeContext(sws_context_);
         sws_context_ = nullptr;
@@ -203,6 +206,10 @@ void AvtpPlayer::HandlePacket(std::shared_ptr<MediaPacket> packet) {
         return;
     }
 
+    if (!EnsureDecoder(*packet)) {
+        return;
+    }
+
     (void)decoder_->Decode(std::move(packet));
 
     const auto now = std::chrono::steady_clock::now();
@@ -210,6 +217,47 @@ void AvtpPlayer::HandlePacket(std::shared_ptr<MediaPacket> packet) {
         ReportStats();
         last_report_ = now;
     }
+}
+
+bool AvtpPlayer::EnsureDecoder(const MediaPacket& packet) {
+    if (packet.codec == CodecType::UNKNOWN) {
+        PublishError("AVTP packet codec is unknown");
+        return false;
+    }
+    if (decoder_codec_ == packet.codec) {
+        return true;
+    }
+
+    if (decoder_) {
+        decoder_->SetFrameCallback({});
+        decoder_->Close();
+    }
+    if (sws_context_) {
+        sws_freeContext(sws_context_);
+        sws_context_ = nullptr;
+    }
+
+    StreamInfo info;
+    info.media_type = MediaType::VIDEO;
+    info.codec_type = packet.codec;
+    info.stream_index = packet.stream_index;
+    info.fps = 25.0F;
+
+    decoder_->SetFrameCallback([this](std::shared_ptr<MediaFrame> frame) {
+        ConvertAndPublishFrame(std::move(frame));
+    });
+    if (!decoder_->Open(info)) {
+        decoder_->SetFrameCallback({});
+        decoder_codec_ = CodecType::UNKNOWN;
+        PublishError(std::string("无法打开 FFmpeg ") +
+                     CodecName(packet.codec) + " 解码器");
+        return false;
+    }
+
+    decoder_codec_ = packet.codec;
+    PublishState(std::string("检测到 AVTP ") + CodecName(packet.codec) +
+                 "，开始解码");
+    return true;
 }
 
 void AvtpPlayer::ReportStats() {
@@ -222,18 +270,23 @@ void AvtpPlayer::ReportStats() {
     const AvtpPuller::Stats stats = avtp_puller->GetStats();
     LOG_INFO(
         "AVTP RX: raw={}, video={}, filtered={}, parse_errors={}, "
-        "lost={}, malformed={}, access_units={}",
+        "h264={}, h265={}, jpeg={}, custom={}, lost={}, malformed={}",
         stats.raw_packets,
         stats.parsed_video_packets,
         stats.filtered_packets,
         stats.parse_errors,
+        stats.assembler.access_units,
+        stats.h265_access_units,
+        stats.jpeg_access_units,
+        stats.custom_subtype_access_units,
         stats.assembler.lost_packets,
-        stats.assembler.malformed_packets,
-        stats.access_units);
+        stats.assembler.malformed_packets);
 
     std::ostringstream message;
     message << "AVTP 包=" << stats.raw_packets
-            << ", H264帧=" << stats.access_units
+            << ", H264=" << stats.assembler.access_units
+            << ", H265=" << stats.h265_access_units
+            << ", JPEG=" << stats.jpeg_access_units
             << ", 丢包=" << stats.assembler.lost_packets
             << ", 解析错误=" << stats.parse_errors;
     PublishState(message.str());

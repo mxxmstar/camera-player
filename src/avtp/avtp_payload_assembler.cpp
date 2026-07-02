@@ -1,16 +1,17 @@
-#include "avtp/cater_cam_assembler.h"
+#include "avtp/avtp_payload_assembler.h"
 
 #include <algorithm>
 #include <utility>
 
 namespace avtp {
 
-CaterCamAssembler::CaterCamAssembler(std::size_t max_access_unit_size)
+AvtpPayloadAssembler::AvtpPayloadAssembler(
+    std::size_t max_access_unit_size)
     : max_access_unit_size_(std::max<std::size_t>(max_access_unit_size, 1)) {
     access_unit_.reserve(512 * 1024);
 }
 
-void CaterCamAssembler::Reset() {
+void AvtpPayloadAssembler::Reset() {
     ResetAccessUnit();
     has_stream_ = false;
     current_stream_id_ = 0;
@@ -20,12 +21,12 @@ void CaterCamAssembler::Reset() {
     stats_ = {};
 }
 
-void CaterCamAssembler::ResetAccessUnit() {
+void AvtpPayloadAssembler::ResetAccessUnit() {
     access_unit_.clear();
     access_unit_.reserve(512 * 1024);
 }
 
-bool CaterCamAssembler::Append(const uint8_t* data, std::size_t size) {
+bool AvtpPayloadAssembler::Append(const uint8_t* data, std::size_t size) {
     if (!data || size == 0) {
         return true;
     }
@@ -36,36 +37,40 @@ bool CaterCamAssembler::Append(const uint8_t* data, std::size_t size) {
     return true;
 }
 
-bool CaterCamAssembler::SameStream(const CaterCamPacket& packet) const {
+bool AvtpPayloadAssembler::SameStream(const ParsedCvfPacket& packet) const {
     if (!has_stream_) {
         return false;
     }
     if (packet.stream_id != current_stream_id_) {
         return false;
     }
-    if (!IsSameMac(packet.source_mac, current_source_mac_)) {
+    if (packet.has_ethernet_header &&
+        !IsSameMac(packet.source_mac, current_source_mac_)) {
         return false;
     }
     return true;
 }
 
-void CaterCamAssembler::SwitchStream(const CaterCamPacket& packet) {
+void AvtpPayloadAssembler::SwitchStream(const ParsedCvfPacket& packet) {
     has_stream_ = true;
     current_stream_id_ = packet.stream_id;
-    current_source_mac_ = packet.source_mac;
+    current_source_mac_ = packet.has_ethernet_header
+                              ? packet.source_mac
+                              : ZeroMac();
     has_expected_sequence_ = false;
     expected_sequence_ = 0;
     ResetAccessUnit();
 }
 
-CaterCamAssembler::Result CaterCamAssembler::FinishAccessUnit(
-    const CaterCamPacket& packet,
+AvtpPayloadAssembler::Result AvtpPayloadAssembler::FinishAccessUnit(
+    const ParsedCvfPacket& packet,
     int64_t capture_timestamp_us,
-    CaterCamAccessUnit& output) {
-    CaterCamAccessUnit candidate;
+    AvtpAccessUnit& output) {
+    AvtpAccessUnit candidate;
     candidate.data = std::move(access_unit_);
     candidate.stream_id = packet.stream_id;
-    candidate.source_mac = packet.source_mac;
+    candidate.source_mac = packet.has_ethernet_header ? packet.source_mac
+                                                      : ZeroMac();
     candidate.sequence_num = packet.sequence_num;
     candidate.avtp_timestamp = packet.avtp_timestamp;
     candidate.timestamp_valid = packet.timestamp_valid;
@@ -77,15 +82,30 @@ CaterCamAssembler::Result CaterCamAssembler::FinishAccessUnit(
     return Result::AccessUnitReady;
 }
 
-CaterCamAssembler::Result CaterCamAssembler::Push(
-    const CaterCamPacket& packet,
+AvtpPayloadAssembler::Result AvtpPayloadAssembler::DropCurrentAccessUnit(
+    bool malformed) {
+    if (!access_unit_.empty()) {
+        ++stats_.dropped_access_units;
+    }
+    ResetAccessUnit();
+    if (malformed) {
+        ++stats_.malformed_packets;
+        return Result::Malformed;
+    }
+    return Result::Dropped;
+}
+
+AvtpPayloadAssembler::Result AvtpPayloadAssembler::Push(
+    const ParsedCvfPacket& packet,
+    const uint8_t* payload,
+    std::size_t payload_size,
     int64_t capture_timestamp_us,
-    CaterCamAccessUnit& output) {
+    AvtpAccessUnit& output) {
     output = {};
     ++stats_.packets;
-    stats_.payload_bytes += packet.payload_size;
+    stats_.payload_bytes += payload_size;
 
-    if (packet.payload == nullptr || packet.payload_size == 0) {
+    if (!payload || payload_size == 0) {
         ++stats_.malformed_packets;
         return Result::Malformed;
     }
@@ -99,13 +119,12 @@ CaterCamAssembler::Result CaterCamAssembler::Push(
         SwitchStream(packet);
     }
 
-    // Check sequence continuity
     if (has_expected_sequence_) {
         if (packet.sequence_num != expected_sequence_) {
-            const uint8_t diff =
+            const uint8_t delta =
                 static_cast<uint8_t>(packet.sequence_num - expected_sequence_);
-            if (diff < 128) {
-                stats_.lost_packets += diff;
+            if (delta < 128) {
+                stats_.lost_packets += delta;
             } else {
                 ++stats_.out_of_order_packets;
             }
@@ -114,29 +133,14 @@ CaterCamAssembler::Result CaterCamAssembler::Push(
     expected_sequence_ = static_cast<uint8_t>(packet.sequence_num + 1);
     has_expected_sequence_ = true;
 
-    if (!Append(packet.payload, packet.payload_size)) {
+    if (!Append(payload, payload_size)) {
         return DropCurrentAccessUnit(true);
     }
 
-    // Marker bit indicates end of access unit
     if (packet.marker) {
         return FinishAccessUnit(packet, capture_timestamp_us, output);
     }
-
     return Result::NeedMore;
-}
-
-CaterCamAssembler::Result CaterCamAssembler::DropCurrentAccessUnit(
-    bool malformed) {
-    if (!access_unit_.empty()) {
-        ++stats_.dropped_access_units;
-    }
-    ResetAccessUnit();
-    if (malformed) {
-        ++stats_.malformed_packets;
-        return Result::Malformed;
-    }
-    return Result::Dropped;
 }
 
 } // namespace avtp

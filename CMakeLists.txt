@@ -343,8 +343,7 @@ if(BUILD_TESTS)
         tests/avtp_protocol_tests.cpp
         src/avtp/avtp_packet_parser.cpp
         src/avtp/avtp_h264_assembler.cpp
-        src/avtp/cater_cam_parser.cpp
-        src/avtp/cater_cam_assembler.cpp
+        src/avtp/avtp_payload_assembler.cpp
     )
     target_include_directories(${PROJECT_NAME}_avtp_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/include

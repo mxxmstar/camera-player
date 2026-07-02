@@ -50,6 +50,16 @@ std::vector<uint8_t> BuildCvfPayload(uint8_t sequence,
     return pdu;
 }
 
+std::vector<uint8_t> BuildCustomSubtypePayload(
+    uint8_t sequence,
+    bool marker,
+    const std::vector<uint8_t>& payload) {
+    auto pdu = BuildCvfPayload(sequence, marker, payload);
+    pdu[0] = avtp::kSubtypeCustom;
+    pdu[17] = avtp::kCvfFormatSubtypeMjpeg;
+    return pdu;
+}
+
 std::vector<uint8_t> WrapEthernet(const std::vector<uint8_t>& pdu,
                                   bool vlan = false) {
     const std::vector<uint8_t> dst = {
@@ -144,7 +154,7 @@ void TestParserRejectsTruncatedStreamData() {
 
 void TestParserRejectsUnsupportedSubtype() {
     auto pdu = BuildCvfPayload(1, false, {0, 0, 0, 1, 0x65});
-    pdu[0] = 0x02;
+    pdu[0] = 0x7f;
     avtp::ParsedCvfPacket packet;
     avtp::ParseError error = avtp::ParseError::None;
     Require(!avtp::AvtpPacketParser::ParseCvfPdu(
@@ -152,6 +162,55 @@ void TestParserRejectsUnsupportedSubtype() {
             "unsupported subtype rejected");
     Require(error == avtp::ParseError::UnsupportedSubtype,
             "unsupported subtype error");
+}
+
+void TestParserAcceptsCustomSubtype() {
+    const std::vector<uint8_t> payload = {
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10};
+    const auto frame =
+        WrapEthernet(BuildCustomSubtypePayload(7, true, payload));
+
+    const avtp::ParsedCvfPacket packet = ParseFrame(frame);
+    Require(packet.subtype == avtp::kSubtypeCustom,
+            "custom subtype parsed");
+    Require(packet.marker, "custom subtype marker parsed");
+    Require(packet.payload_size == payload.size(),
+            "custom subtype payload size");
+    Require(std::equal(payload.begin(), payload.end(), packet.payload),
+            "custom subtype payload preserved");
+}
+
+void TestCustomSubtypeCanCarryH264Payload() {
+    const auto frame = WrapEthernet(BuildCustomSubtypePayload(
+        9, true, DecodableKeyframePayload()));
+
+    const avtp::ParsedCvfPacket packet = ParseFrame(frame);
+    Require(packet.subtype == avtp::kSubtypeCustom,
+            "custom subtype parsed for H264 payload");
+    Require(packet.format_subtype == avtp::kCvfFormatSubtypeMjpeg,
+            "custom subtype test starts with MJPEG format_subtype");
+    Require(avtp::StartsWithAnnexBStartCode(
+                packet.payload, packet.payload_size),
+            "custom subtype H264 payload keeps Annex-B start code");
+
+    avtp::AvtpH264Assembler assembler;
+    avtp::H264AccessUnit output;
+    Require(assembler.Push(packet, 1000, output) ==
+                avtp::AvtpH264Assembler::Result::AccessUnitReady,
+            "custom subtype H264 payload can assemble");
+    Require(output.keyframe, "custom subtype H264 output keyframe");
+}
+
+void TestParserKeepsLooseFormatSubtype() {
+    auto pdu = BuildCvfPayload(1, true, {0, 0, 0, 1, 0x65});
+    pdu[17] = 0x7e;
+    avtp::ParsedCvfPacket packet;
+    avtp::ParseError error = avtp::ParseError::None;
+    Require(avtp::AvtpPacketParser::ParseCvfPdu(
+                pdu.data(), pdu.size(), packet, &error),
+            std::string("loose format_subtype accepted: ") +
+                avtp::AvtpPacketParser::ErrorToString(error));
+    Require(packet.format_subtype == 0x7e, "loose format_subtype preserved");
 }
 
 void TestAssemblerBuildsAccessUnit() {
@@ -325,6 +384,9 @@ int main() {
     TestParserVlanAndMarker();
     TestParserRejectsTruncatedStreamData();
     TestParserRejectsUnsupportedSubtype();
+    TestParserAcceptsCustomSubtype();
+    TestCustomSubtypeCanCarryH264Payload();
+    TestParserKeepsLooseFormatSubtype();
     TestAssemblerBuildsAccessUnit();
     TestAssemblerSequenceWrap();
     TestAssemblerGapDropsOnlyCorruptAccessUnit();

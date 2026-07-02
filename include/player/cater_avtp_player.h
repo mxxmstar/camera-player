@@ -1,31 +1,20 @@
 #pragma once
 
-#include <atomic>
-#include <chrono>
-#include <functional>
+#include "player/avtp_player.h"
+
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
-class JpegDecoder;
-class IPuller;
 class MediaFrame;
-class MediaPacket;
-class StreamSession;
-struct SwsContext;
 
-/// Owns the Cater AVTP/CVF receiver and decoder worker.
-/// Uses CaterCam format (format_subtype=0x00) for encrypted H.264 payloads.
+/// Compatibility wrapper for the old Cater AVTP UI entry.
+/// All AVTP variants now use AvtpPlayer internally.
 class CaterAvtpPlayer {
 public:
-    using FrameCallback = std::function<void(std::shared_ptr<const MediaFrame>)>;
-    using MessageCallback = std::function<void(const std::string&)>;
-
-    struct CaptureDevice {
-        std::string name;
-        std::string description;
-    };
+    using FrameCallback = AvtpPlayer::FrameCallback;
+    using MessageCallback = AvtpPlayer::MessageCallback;
+    using CaptureDevice = AvtpPlayer::CaptureDevice;
 
     CaterAvtpPlayer();
     ~CaterAvtpPlayer();
@@ -37,7 +26,7 @@ public:
                const std::string& source_mac,
                const std::string& stream_id = std::string());
     void Stop();
-    bool IsRunning() const { return running_.load(); }
+    bool IsRunning() const;
 
     void SetFrameCallback(FrameCallback callback);
     void SetStateCallback(MessageCallback callback);
@@ -46,29 +35,5 @@ public:
     static std::vector<CaptureDevice> ListCaptureDevices();
 
 private:
-    struct Runtime;
-
-    bool StartOnIo(const std::string& device_name,
-                   const std::string& source_mac,
-                   const std::string& stream_id);
-    void StopOnIo();
-    void HandlePacket(std::shared_ptr<MediaPacket> packet);
-    void ReportStats();
-    void ConvertAndPublishFrame(std::shared_ptr<MediaFrame> frame);
-    void PublishFrame(std::shared_ptr<const MediaFrame> frame);
-    void PublishState(const std::string& state);
-    void PublishError(const std::string& error);
-
-    std::unique_ptr<Runtime> runtime_;
-    std::shared_ptr<StreamSession> session_;
-    IPuller* puller_{nullptr};
-    std::unique_ptr<JpegDecoder> decoder_;
-    std::atomic<bool> running_{false};
-    std::chrono::steady_clock::time_point last_report_{};
-    SwsContext* sws_context_{nullptr};
-
-    mutable std::mutex callback_mutex_;
-    FrameCallback frame_callback_;
-    MessageCallback state_callback_;
-    MessageCallback error_callback_;
+    std::unique_ptr<AvtpPlayer> player_;
 };

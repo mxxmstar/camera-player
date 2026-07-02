@@ -78,7 +78,8 @@ bool AvtpPacketParser::Parse(const uint8_t* data, std::size_t size,
     // Allow callers that already stripped the Ethernet header to pass the
     // AVTP/CVF PDU directly. This is useful in tests and when capture layers
     // are configured differently.
-    if (size >= 1 && data[0] == kSubtypeCvf) {
+    if (size >= 1 &&
+        (data[0] == kSubtypeCvf || data[0] == kSubtypeCustom)) {
         return ParseCvfPdu(data, size, packet, error);
     }
 
@@ -149,7 +150,9 @@ bool AvtpPacketParser::ParseCvfPdu(const uint8_t* data, std::size_t size,
     }
 
     parsed.subtype = data[0];
-    if (parsed.subtype != kSubtypeCvf) {
+    const bool is_cvf = parsed.subtype == kSubtypeCvf;
+    const bool is_custom_subtype = parsed.subtype == kSubtypeCustom;
+    if (!is_cvf && !is_custom_subtype) {
         SetError(error, ParseError::UnsupportedSubtype);
         return false;
     }
@@ -169,14 +172,7 @@ bool AvtpPacketParser::ParseCvfPdu(const uint8_t* data, std::size_t size,
     parsed.avtp_timestamp = ReadBe32(data + 12);
     parsed.format = data[16];
     parsed.format_subtype = data[17];
-    if (parsed.format != kCvfFormatRfc) {
-        SetError(error, ParseError::UnsupportedFormat);
-        return false;
-    }
-
-    // Support both standard H.264 (subtype 0x01) and custom format (subtype 0x00)
-    if (parsed.format_subtype != kCvfFormatSubtypeH264 &&
-        parsed.format_subtype != kCvfFormatSubtypeCustom) {
+    if (is_cvf && parsed.format != kCvfFormatRfc) {
         SetError(error, ParseError::UnsupportedFormat);
         return false;
     }
@@ -195,8 +191,14 @@ bool AvtpPacketParser::ParseCvfPdu(const uint8_t* data, std::size_t size,
     parsed.payload = data + kCvfHeaderSize;
     parsed.payload_size = parsed.stream_data_length;
 
-    // Parse custom payload format (我司CAM)
-    if (parsed.format_subtype == kCvfFormatSubtypeCustom) {
+    // Parse vendor CAM per-packet prefix when present. Do not treat
+    // format_subtype=0 as sufficient; several devices fill it loosely.
+    if (parsed.payload_size >= kCustomPayloadHeaderSize) {
+        const uint32_t magic = ReadBe32(parsed.payload + 4);
+        parsed.is_custom_format =
+            magic == kCustomPayloadMagic || magic == kCustomPayloadMagicAlt;
+    }
+    if (parsed.is_custom_format) {
         parsed.is_custom_format = true;
         if (parsed.payload_size >= kCustomPayloadHeaderSize) {
             parsed.custom_payload_length = ReadBe32(parsed.payload);

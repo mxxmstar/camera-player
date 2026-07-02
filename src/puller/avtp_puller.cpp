@@ -92,11 +92,166 @@ std::string MakePcapUrl(const std::string& device) {
     return "pcap://" + device;
 }
 
+bool IsJpegStart(const uint8_t* data, std::size_t size) {
+    return data && size >= 3 &&
+           data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+}
+
+std::size_t FindStartCode(const uint8_t* data,
+                          std::size_t size,
+                          std::size_t offset,
+                          std::size_t& start_code_size) {
+    if (!data) {
+        start_code_size = 0;
+        return size;
+    }
+    for (std::size_t i = offset; i + 3 <= size; ++i) {
+        if (i + 4 <= size && data[i] == 0 && data[i + 1] == 0 &&
+            data[i + 2] == 0 && data[i + 3] == 1) {
+            start_code_size = 4;
+            return i;
+        }
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+            start_code_size = 3;
+            return i;
+        }
+    }
+    start_code_size = 0;
+    return size;
+}
+
+CodecType CodecFromFormatSubtype(uint8_t format_subtype) {
+    switch (format_subtype) {
+        case avtp::kCvfFormatSubtypeMjpeg:
+            return CodecType::JPEG;
+        case avtp::kCvfFormatSubtypeH264:
+            return CodecType::H264;
+        case avtp::kCvfFormatSubtypeH265:
+            return CodecType::H265;
+        default:
+            return CodecType::UNKNOWN;
+    }
+}
+
+bool LooksLikeH265NalHeader(const uint8_t* data,
+                            std::size_t size,
+                            std::size_t nal_start) {
+    if (!data || nal_start + 1 >= size) {
+        return false;
+    }
+    if ((data[nal_start] & 0x80U) != 0) {
+        return false;
+    }
+    if ((data[nal_start] & 0x01U) != 0) {
+        return false;
+    }
+    return (data[nal_start + 1] & 0x07U) != 0;
+}
+
+CodecType DetectAnnexBCodec(const uint8_t* data, std::size_t size) {
+    if (!avtp::StartsWithAnnexBStartCode(data, size)) {
+        return CodecType::UNKNOWN;
+    }
+
+    int h264_score = 0;
+    int h265_score = 0;
+    std::size_t offset = 0;
+    int nal_count = 0;
+    while (offset < size && nal_count < 8) {
+        std::size_t start_code_size = 0;
+        const std::size_t start =
+            FindStartCode(data, size, offset, start_code_size);
+        if (start == size) {
+            break;
+        }
+
+        const std::size_t nal_start = start + start_code_size;
+        if (nal_start >= size) {
+            break;
+        }
+
+        const uint8_t first = data[nal_start];
+        const uint8_t h264_type = static_cast<uint8_t>(first & 0x1FU);
+        const uint8_t h265_type = static_cast<uint8_t>((first >> 1) & 0x3FU);
+        const bool h265_header =
+            LooksLikeH265NalHeader(data, size, nal_start);
+
+        if (h264_type == 7 || h264_type == 8 || h264_type == 5) {
+            h264_score += 4;
+        } else if (h264_type == 1 || h264_type == 6 || h264_type == 9) {
+            h264_score += 1;
+        }
+
+        if (h265_header &&
+            (h265_type == 32 || h265_type == 33 || h265_type == 34)) {
+            h265_score += 5;
+        } else if (h265_header &&
+                   (h265_type == 19 || h265_type == 20 ||
+                    h265_type == 21)) {
+            h265_score += 4;
+        } else if (h265_header &&
+                   (h265_type == 0 || h265_type == 1 ||
+                    h265_type == 39 || h265_type == 40)) {
+            h265_score += 1;
+        }
+
+        ++nal_count;
+        offset = nal_start + 1;
+    }
+
+    if (h265_score > h264_score) {
+        return CodecType::H265;
+    }
+    if (h264_score > h265_score) {
+        return CodecType::H264;
+    }
+    return CodecType::UNKNOWN;
+}
+
+bool ContainsH265KeyNal(const std::vector<uint8_t>& data) {
+    std::size_t offset = 0;
+    while (offset < data.size()) {
+        std::size_t start_code_size = 0;
+        const std::size_t start =
+            FindStartCode(data.data(), data.size(), offset, start_code_size);
+        if (start == data.size()) {
+            return false;
+        }
+
+        const std::size_t nal_start = start + start_code_size;
+        if (nal_start >= data.size()) {
+            return false;
+        }
+
+        const uint8_t nal_type =
+            static_cast<uint8_t>((data[nal_start] >> 1) & 0x3FU);
+        if (LooksLikeH265NalHeader(data.data(), data.size(), nal_start) &&
+            (nal_type == 19 || nal_type == 20 || nal_type == 21)) {
+            return true;
+        }
+        offset = nal_start + 1;
+    }
+    return false;
+}
+
+const char* CodecName(CodecType codec) {
+    switch (codec) {
+        case CodecType::H264:
+            return "H264";
+        case CodecType::H265:
+            return "H265";
+        case CodecType::JPEG:
+            return "JPEG";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 } // namespace
 
 AvtpPuller::AvtpPuller() {
     stream_info_.media_type = MediaType::VIDEO;
-    stream_info_.codec_type = CodecType::H264;
+    stream_info_.codec_type = CodecType::UNKNOWN;
     stream_info_.stream_index = 0;
     stream_info_.fps = 25.0F;
 }
@@ -197,14 +352,20 @@ bool AvtpPuller::ParseUrl(const std::string& url, Config& config,
         }
     }
     if (const auto it = values.find("format"); it != values.end()) {
-        if (it->second == "custom" || it->second == "0") {
-            parsed.format = PayloadFormat::Custom;
-        } else if (it->second == "standard" || it->second == "h264" || it->second == "1") {
-            parsed.format = PayloadFormat::Standard;
+        if (it->second == "h264" || it->second == "standard" ||
+            it->second == "1") {
+            parsed.format = PayloadFormat::H264;
+        } else if (it->second == "h265" || it->second == "hevc" ||
+                   it->second == "3") {
+            parsed.format = PayloadFormat::H265;
+        } else if (it->second == "jpeg" || it->second == "mjpeg" ||
+                   it->second == "custom" || it->second == "vendor" ||
+                   it->second == "cater" || it->second == "0") {
+            parsed.format = PayloadFormat::Jpeg;
         } else if (it->second == "auto") {
             parsed.format = PayloadFormat::Auto;
         } else {
-            error = "invalid format (use auto, standard, custom, h264, 0, or 1)";
+            error = "invalid format (use auto, h264, h265, jpeg, mjpeg, custom, 0, 1, or 3)";
             return false;
         }
     }
@@ -278,24 +439,41 @@ bool AvtpPuller::Open(const std::string& url) {
     config_ = std::move(parsed);
 
     stream_info_.media_type = MediaType::VIDEO;
-    // Custom format (卡特CAM) uses JPEG/MJPEG, standard format uses H.264
-    stream_info_.codec_type = (config_.format == PayloadFormat::Custom)
-                                  ? CodecType::JPEG
-                                  : CodecType::H264;
+    switch (config_.format) {
+        case PayloadFormat::H264:
+            stream_info_.codec_type = CodecType::H264;
+            break;
+        case PayloadFormat::H265:
+            stream_info_.codec_type = CodecType::H265;
+            break;
+        case PayloadFormat::Jpeg:
+            stream_info_.codec_type = CodecType::JPEG;
+            break;
+        case PayloadFormat::Auto:
+        default:
+            stream_info_.codec_type = CodecType::UNKNOWN;
+            break;
+    }
     stream_info_.stream_index = 0;
     stream_info_.width = config_.width;
     stream_info_.height = config_.height;
     stream_info_.fps = config_.fps;
 
     assembler_.Reset();
-    cater_cam_assembler_.Reset();
+    payload_assembler_.Reset();
+    has_codec_stream_ = false;
+    codec_stream_id_ = 0;
+    codec_source_mac_ = {};
+    current_codec_ = CodecType::UNKNOWN;
     raw_packets_ = 0;
     parsed_video_packets_ = 0;
     filtered_packets_ = 0;
     parse_errors_ = 0;
     access_units_ = 0;
-    cater_cam_packets_ = 0;
-    cater_cam_access_units_ = 0;
+    custom_subtype_packets_ = 0;
+    custom_subtype_access_units_ = 0;
+    h265_access_units_ = 0;
+    jpeg_access_units_ = 0;
 
     pcap_puller_.SetStripEthernetHeader(false);
     pcap_puller_.SetBpfFilter(BuildBpfFilter(config_));
@@ -311,12 +489,27 @@ bool AvtpPuller::Open(const std::string& url) {
         return false;
     }
 
-    LOG_INFO("AVTP/CVF listening on {} src={} stream={} format={}",
+    const char* format_name = "auto";
+    switch (config_.format) {
+        case PayloadFormat::H264:
+            format_name = "h264";
+            break;
+        case PayloadFormat::H265:
+            format_name = "h265";
+            break;
+        case PayloadFormat::Jpeg:
+            format_name = "jpeg";
+            break;
+        case PayloadFormat::Auto:
+        default:
+            break;
+    }
+
+    LOG_INFO("AVTP listening on {} src={} stream={} format={}",
              config_.device,
              config_.source_mac ? FormatMacAddress(*config_.source_mac) : "*",
              config_.stream_id ? std::to_string(*config_.stream_id) : "*",
-             config_.format == PayloadFormat::Custom ? "custom" :
-             config_.format == PayloadFormat::Standard ? "standard" : "auto");
+             format_name);
     return true;
 }
 
@@ -336,6 +529,92 @@ bool AvtpPuller::PassesConfiguredFilters(
     return true;
 }
 
+bool AvtpPuller::PassesFormatFilter(CodecType codec) const {
+    switch (config_.format) {
+        case PayloadFormat::H264:
+            return codec == CodecType::H264;
+        case PayloadFormat::H265:
+            return codec == CodecType::H265;
+        case PayloadFormat::Jpeg:
+            return codec == CodecType::JPEG;
+        case PayloadFormat::Auto:
+        default:
+            return true;
+    }
+}
+
+bool AvtpPuller::SameCodecStream(const avtp::ParsedCvfPacket& packet) const {
+    if (!has_codec_stream_) {
+        return false;
+    }
+    if (packet.stream_id != codec_stream_id_) {
+        return false;
+    }
+    if (packet.has_ethernet_header &&
+        !avtp::IsSameMac(packet.source_mac, codec_source_mac_)) {
+        return false;
+    }
+    return true;
+}
+
+void AvtpPuller::RememberCodec(const avtp::ParsedCvfPacket& packet,
+                               CodecType codec) {
+    if (codec == CodecType::UNKNOWN) {
+        return;
+    }
+    has_codec_stream_ = true;
+    codec_stream_id_ = packet.stream_id;
+    codec_source_mac_ = packet.has_ethernet_header
+                            ? packet.source_mac
+                            : avtp::ZeroMac();
+    if (current_codec_ != CodecType::UNKNOWN && current_codec_ != codec) {
+        assembler_.Reset();
+        payload_assembler_.Reset();
+    }
+    if (current_codec_ != codec) {
+        LOG_INFO("AVTP stream codec detected: {} subtype=0x{:02x} "
+                 "format_subtype=0x{:02x}",
+                 CodecName(codec),
+                 static_cast<unsigned>(packet.subtype),
+                 static_cast<unsigned>(packet.format_subtype));
+    }
+    current_codec_ = codec;
+}
+
+CodecType AvtpPuller::SelectCodec(const avtp::ParsedCvfPacket& packet,
+                                  const uint8_t* payload,
+                                  std::size_t payload_size) {
+    if (IsJpegStart(payload, payload_size)) {
+        return CodecType::JPEG;
+    }
+
+    const CodecType payload_codec = DetectAnnexBCodec(payload, payload_size);
+    if (payload_codec != CodecType::UNKNOWN) {
+        return payload_codec;
+    }
+
+    if (SameCodecStream(packet) && current_codec_ != CodecType::UNKNOWN) {
+        return current_codec_;
+    }
+
+    const CodecType format_codec =
+        CodecFromFormatSubtype(packet.format_subtype);
+    if (format_codec == CodecType::JPEG &&
+        !IsJpegStart(payload, payload_size)) {
+        return packet.subtype == avtp::kSubtypeCustom
+                   ? CodecType::JPEG
+                   : CodecType::UNKNOWN;
+    }
+    if (format_codec != CodecType::UNKNOWN) {
+        return format_codec;
+    }
+
+    if (packet.subtype == avtp::kSubtypeCustom) {
+        return CodecType::JPEG;
+    }
+    return CodecType::UNKNOWN;
+}
+
 std::shared_ptr<MediaPacket> AvtpPuller::MakeMediaPacket(
     avtp::H264AccessUnit access_unit) const {
     auto packet = std::make_shared<MediaPacket>();
@@ -353,17 +632,19 @@ std::shared_ptr<MediaPacket> AvtpPuller::MakeMediaPacket(
     return packet;
 }
 
-std::shared_ptr<MediaPacket> AvtpPuller::MakeMediaPacketFromCaterCam(
-    avtp::CaterCamAccessUnit access_unit) const {
+std::shared_ptr<MediaPacket> AvtpPuller::MakeMediaPacketFromAccessUnit(
+    avtp::AvtpAccessUnit access_unit,
+    CodecType codec,
+    bool keyframe) const {
     auto packet = std::make_shared<MediaPacket>();
     packet->type = MediaType::VIDEO;
-    packet->codec = CodecType::H264;
+    packet->codec = codec;
     packet->stream_index = 0;
     packet->pts = access_unit.capture_timestamp_us;
     packet->dts = packet->pts;
     packet->duration = 0;
     packet->time_base = Rational{1, 1000000};
-    packet->keyframe = false; // Cater CAM payload is encrypted, cannot detect keyframe
+    packet->keyframe = keyframe;
     packet->buffer =
         std::make_shared<SimpleBuffer>(std::move(access_unit.data));
     packet->backend = {};
@@ -410,37 +691,54 @@ bool AvtpPuller::ReadPacket(std::shared_ptr<MediaPacket>& packet) {
 
         ++parsed_video_packets_;
 
-        // Check if this is a Cater CAM packet (format_subtype=0x00)
-        if (cvf_packet.format_subtype == avtp::kCvfFormatSubtypeCustom) {
-            // Cater CAM format
-            if (config_.format == PayloadFormat::Standard) {
-                // User explicitly requested standard format, skip custom
-                ++filtered_packets_;
-                continue;
+        const uint8_t* payload = cvf_packet.payload;
+        std::size_t payload_size = cvf_packet.payload_size;
+        if (cvf_packet.subtype == avtp::kSubtypeCustom) {
+            ++custom_subtype_packets_;
+            if (cvf_packet.is_custom_format &&
+                payload_size > avtp::kCustomPayloadHeaderSize) {
+                payload += avtp::kCustomPayloadHeaderSize;
+                payload_size -= avtp::kCustomPayloadHeaderSize;
             }
+        }
 
-            ++cater_cam_packets_;
-            avtp::CaterCamPacket cater_cam_packet;
-            if (!avtp::CaterCamParser::Parse(cvf_packet, cater_cam_packet)) {
-                ++parse_errors_;
-                continue;
-            }
-
-            avtp::CaterCamAccessUnit access_unit;
-            const auto result = cater_cam_assembler_.Push(
-                cater_cam_packet, raw_packet->pts, access_unit);
-            if (result == avtp::CaterCamAssembler::Result::AccessUnitReady) {
-                ++cater_cam_access_units_;
-                packet = MakeMediaPacketFromCaterCam(std::move(access_unit));
-                return true;
-            }
+        const CodecType codec = SelectCodec(cvf_packet, payload, payload_size);
+        if (codec == CodecType::UNKNOWN) {
+            ++filtered_packets_;
             continue;
         }
 
-        // Standard H.264 format (format_subtype=0x01)
-        if (config_.format == PayloadFormat::Custom) {
-            // User explicitly requested custom format, skip standard
+        if (!PassesFormatFilter(codec)) {
             ++filtered_packets_;
+            continue;
+        }
+
+        RememberCodec(cvf_packet, codec);
+
+        if (codec != CodecType::H264) {
+            avtp::AvtpAccessUnit access_unit;
+            const auto result = payload_assembler_.Push(
+                cvf_packet, payload, payload_size, raw_packet->pts,
+                access_unit);
+            if (result ==
+                avtp::AvtpPayloadAssembler::Result::AccessUnitReady) {
+                const bool keyframe =
+                    codec == CodecType::JPEG ||
+                    (codec == CodecType::H265 &&
+                     ContainsH265KeyNal(access_unit.data));
+                if (codec == CodecType::JPEG) {
+                    ++jpeg_access_units_;
+                } else if (codec == CodecType::H265) {
+                    ++h265_access_units_;
+                }
+                if (cvf_packet.subtype == avtp::kSubtypeCustom) {
+                    ++custom_subtype_access_units_;
+                }
+                ++access_units_;
+                packet = MakeMediaPacketFromAccessUnit(
+                    std::move(access_unit), codec, keyframe);
+                return true;
+            }
             continue;
         }
 
@@ -488,6 +786,11 @@ AvtpPuller::Stats AvtpPuller::GetStats() const {
     stats.filtered_packets = filtered_packets_.load();
     stats.parse_errors = parse_errors_.load();
     stats.access_units = access_units_.load();
+    stats.custom_subtype_packets = custom_subtype_packets_.load();
+    stats.custom_subtype_access_units = custom_subtype_access_units_.load();
+    stats.h265_access_units = h265_access_units_.load();
+    stats.jpeg_access_units = jpeg_access_units_.load();
     stats.assembler = assembler_.GetStats();
+    stats.payload_assembler = payload_assembler_.GetStats();
     return stats;
 }

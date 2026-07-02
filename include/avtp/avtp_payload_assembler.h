@@ -1,6 +1,6 @@
 #pragma once
 
-#include "avtp/cater_cam_parser.h"
+#include "avtp/avtp_packet_parser.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -8,8 +8,7 @@
 
 namespace avtp {
 
-/// Cater CAM access unit assembled from multiple packets.
-struct CaterCamAccessUnit {
+struct AvtpAccessUnit {
     std::vector<uint8_t> data;
     uint64_t stream_id{0};
     MacAddress source_mac{};
@@ -19,12 +18,7 @@ struct CaterCamAccessUnit {
     int64_t capture_timestamp_us{0};
 };
 
-/// Assembles Cater CAM packets into access units.
-///
-/// Cater CAM packets contain raw encrypted H.264 data. The assembler
-/// collects packets until the marker bit is set, indicating the end
-/// of an access unit.
-class CaterCamAssembler {
+class AvtpPayloadAssembler {
 public:
     enum class Result {
         NeedMore,
@@ -43,12 +37,14 @@ public:
         uint64_t payload_bytes{0};
     };
 
-    explicit CaterCamAssembler(
+    explicit AvtpPayloadAssembler(
         std::size_t max_access_unit_size = 8 * 1024 * 1024);
 
-    Result Push(const CaterCamPacket& packet,
+    Result Push(const ParsedCvfPacket& packet,
+                const uint8_t* payload,
+                std::size_t payload_size,
                 int64_t capture_timestamp_us,
-                CaterCamAccessUnit& output);
+                AvtpAccessUnit& output);
 
     void Reset();
     const Stats& GetStats() const { return stats_; }
@@ -56,11 +52,11 @@ public:
 private:
     bool Append(const uint8_t* data, std::size_t size);
     void ResetAccessUnit();
-    bool SameStream(const CaterCamPacket& packet) const;
-    void SwitchStream(const CaterCamPacket& packet);
-    Result FinishAccessUnit(const CaterCamPacket& packet,
+    bool SameStream(const ParsedCvfPacket& packet) const;
+    void SwitchStream(const ParsedCvfPacket& packet);
+    Result FinishAccessUnit(const ParsedCvfPacket& packet,
                             int64_t capture_timestamp_us,
-                            CaterCamAccessUnit& output);
+                            AvtpAccessUnit& output);
     Result DropCurrentAccessUnit(bool malformed);
 
     std::size_t max_access_unit_size_;

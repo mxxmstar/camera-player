@@ -7,17 +7,30 @@
 namespace avtp {
 
 constexpr uint16_t kEtherTypeAvtp = 0x22F0;
-constexpr uint8_t kSubtypeCvf = 0x03;
+constexpr uint8_t kSubtypeCvf = 0x02;
+constexpr uint8_t kSubtypeCustom = 0x03;
 constexpr uint8_t kCvfFormatRfc = 0x02;
+constexpr uint8_t kCvfFormatSubtypeMjpeg = 0x00;
 constexpr uint8_t kCvfFormatSubtypeH264 = 0x01;
-constexpr uint8_t kCvfFormatSubtypeCustom = 0x00;
+constexpr uint8_t kCvfFormatSubtypeJpeg2000 = 0x02;
+constexpr uint8_t kCvfFormatSubtypeH265 = 0x03;
+constexpr uint8_t kCvfFormatSubtypeCustom = kCvfFormatSubtypeMjpeg;
 constexpr std::size_t kCvfHeaderSize = 24;
 
-// Custom payload format constants (我司CAM)
+// Custom subtype payload prefix. Some captures use 0x415da05a, others use
+// 0x415ea05a; both identify the same 8-byte per-packet prefix.
 constexpr uint32_t kCustomPayloadMagic = 0x415DA05A;
+constexpr uint32_t kCustomPayloadMagicAlt = 0x415EA05A;
 constexpr std::size_t kCustomPayloadHeaderSize = 8; // 4-byte length + 4-byte magic
 
 using MacAddress = std::array<uint8_t, 6>;
+
+enum class AVTPSubtype {
+    IEC61883 = 0x00,     ///< IEC61883 格式
+    MMP = 0x01,       ///< 媒体流管理协议（MMP）格式
+    CVF = 0x02,         ///< CVF(Compressed Video Format, H.264/5/JPEG/) 格式
+    Custom = 0x03      ///< 私有 CAM/JPEG 格式
+};
 
 enum class ParseError {
     None,

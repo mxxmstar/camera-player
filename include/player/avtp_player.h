@@ -8,10 +8,11 @@
 #include <string>
 #include <vector>
 
+#include "media/media_packet.hpp"
+
 class FFmpegDecoder;
 class IPuller;
 class MediaFrame;
-class MediaPacket;
 class StreamSession;
 struct SwsContext;
 
@@ -52,6 +53,7 @@ private:
                    const std::string& stream_id);
     void StopOnIo();
     void HandlePacket(std::shared_ptr<MediaPacket> packet);
+    bool EnsureDecoder(const MediaPacket& packet);
     void ReportStats();
     void ConvertAndPublishFrame(std::shared_ptr<MediaFrame> frame);
     void PublishFrame(std::shared_ptr<const MediaFrame> frame);
@@ -62,6 +64,7 @@ private:
     std::shared_ptr<StreamSession> session_;
     IPuller* puller_{nullptr};
     std::unique_ptr<FFmpegDecoder> decoder_;
+    CodecType decoder_codec_{CodecType::UNKNOWN};
     std::atomic<bool> running_{false};
     std::chrono::steady_clock::time_point last_report_{};
     SwsContext* sws_context_{nullptr};
